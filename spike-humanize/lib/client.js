@@ -217,6 +217,55 @@
       // and the lowest priority renders. The built-in `assistant-step` sits at
       // whichever priority the chat UI chose, so probe candidates until one
       // does not collide.
+      // --- G6 probe: can the client identify the session it is rendering? ----
+      // The chat node props carry turn/step but no session id. This dumps the
+      // shape of the client-side `sessions` service so we can see whether the
+      // active session is reachable from a plugin.
+      function probeSessions(ctx) {
+        var out = { ts: new Date().toISOString(), available: false };
+
+        var svc;
+        try {
+          svc = typeof ctx.get === "function" ? ctx.get("sessions") : undefined;
+        } catch (error) {
+          return { available: false, error: String((error && error.message) || error) };
+        }
+
+        if (!svc) return out;
+        out.available = true;
+
+        try {
+          out.serviceKeys = Object.keys(svc).slice(0, 60);
+        } catch {
+          out.serviceKeys = null;
+        }
+
+        try {
+          var list = svc.list;
+          var snap =
+            list && typeof list.get === "function" ? list.get() : typeof list === "object" ? list : null;
+          if (snap) {
+            out.list = {
+              ids: Array.isArray(snap.ids) ? snap.ids.slice(0, 50) : null,
+              phase: snap.phase ?? null,
+              byIdKeys: snap.byId ? Object.keys(snap.byId).slice(0, 50) : null,
+            };
+          }
+        } catch (error) {
+          out.listError = String((error && error.message) || error);
+        }
+
+        try {
+          out.prototypeMethods = svc.constructor
+            ? Object.getOwnPropertyNames(svc.constructor.prototype).slice(0, 60)
+            : null;
+        } catch {
+          out.prototypeMethods = null;
+        }
+
+        return out;
+      }
+
       function tryRegister(slots, prio, View) {
         try {
           slots.inject("conversation.chat.node", function* () {
@@ -255,6 +304,11 @@
           get priority() {
             return used.priority;
           },
+          sessions: function () {
+            var result = probeSessions(ctx);
+            console.log("[spike-humanize] sessions probe", result);
+            return result;
+          },
           dump: function () {
             var rows = summarize(listEntries(slots));
             console.table(rows);
@@ -280,9 +334,30 @@
 
         if (mode === "off") {
           console.log("[spike-humanize] mode=off; native renderer kept");
-          return;
+        } else {
+          registerView(slots, used);
         }
 
+        // G6: dump the sessions service once the app has settled, so it can be
+        // read straight off the console without typing anything.
+        autoProbeSessions(ctx, [3000, 10000]);
+      }
+
+      function autoProbeSessions(ctx, delays) {
+        if (typeof setTimeout !== "function") return;
+        delays.forEach(function (delay) {
+          setTimeout(function () {
+            var result = probeSessions(ctx);
+            if (!result.available) {
+              console.log("[spike-humanize] sessions probe @" + delay + "ms: service not available yet");
+              return;
+            }
+            console.log("[spike-humanize] sessions probe @" + delay + "ms", result);
+          }, delay);
+        });
+      }
+
+      function registerView(slots, used) {
         var View = mode === "shadow" ? ShadowView : ProbeView;
         var attempts = [priority].concat(
           PRIORITY_FALLBACKS.filter(function (p) {

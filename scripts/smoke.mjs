@@ -251,3 +251,4 @@ await testHost();
 await testClient("probe");
 await testClient("shadow");
 console.log("[smoke] all checks passed");
+process.exit(0);

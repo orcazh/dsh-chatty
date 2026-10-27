@@ -106,6 +106,14 @@ location.reload()
 window.__humanizeSpike.dump()
 ```
 
+G6：查看客户端 `sessions` 服务的形状（用于判断能否定位「当前显示的会话」）：
+
+```js
+window.__humanizeSpike.sessions()
+```
+
+> 这一项**不依赖客户端模式**，加载后 3s / 10s 会自动在 Console 打印一次，无需手动执行。
+
 > **已实测结论**：keyed slot 同 key **同优先级会抛错**，错误信息为「register at a different priority to shadow it (lowest renders)」。内置 `assistant-step` 在 priority `0`，因此遮蔽必须用**负数**，探针默认 `-100`，并在冲突时自动降级重试（-100 → -1 → -1000 → -10000 → 100 → 1000）。
 
 调整优先级：
