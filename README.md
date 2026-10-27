@@ -5,9 +5,10 @@ Phase 0 探针工程。目标不是做出插件，而是回答三个问题：
 1. **G1**：能否遮蔽 `assistant-step` 并保留原生渲染能力？
 2. **G2**：L2 段落提示词能否让模型稳定输出短段落？
 3. **G3**：客户端能否拿到实时数据，并通过 RPC 读写宿主配置？
+4. **G6**：客户端能否判定「当前渲染节点属于哪个会话」（FR-12 会话作用域的前提）？
 
 > 完整计划见 `C:\Users\Orca\.opencode\plan\Phase0-Spike计划.md`。
-> 需求文档见 `C:\Users\Orca\.opencode\plan\需求文档-v1.2.md`。
+> 需求文档见 `C:\Users\Orca\.opencode\plan\需求文档-v1.3.md`。
 
 ---
 
