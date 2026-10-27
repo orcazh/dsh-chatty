@@ -268,6 +268,15 @@ async function testClient(mode) {
     });
     assert.equal(history.props.children.length, 3, "history must render every bubble immediately");
 
+    // The reveal decision itself. DSH renders one empty-body frame right after
+    // settle; "wait" there is what stops the whole reply from dumping at once.
+    const plan = globalThis.window.__humanizeSpike.planReveal;
+    assert.equal(plan({ done: false, shown: 0 }, 0, false), "wait", "empty body must not finish");
+    assert.equal(plan({ done: false, shown: 0 }, 3, false), "schedule");
+    assert.equal(plan({ done: false, shown: 3 }, 3, false), "finish");
+    assert.equal(plan({ done: true, shown: 0 }, 3, false), "settled");
+    assert.equal(plan({ done: false, shown: 0 }, 3, true), "reduced", "respect reduced motion");
+
     // A fenced code block may contain blank lines; it must never be cut up.
     const withCode = entry.component({
       node: {

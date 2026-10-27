@@ -505,6 +505,25 @@
       }
 
       /**
+       * What the reveal should do next. Pure on purpose: this decision had a
+       * subtle bug (an empty body frame marked the reveal finished), so it is
+       * unit-tested from smoke instead of being buried in an effect.
+       *
+       *   "settled"  nothing to do, already finished
+       *   "reduced"  honour prefers-reduced-motion: show everything now
+       *   "wait"     blocks are not here yet; do NOT mark finished
+       *   "finish"   every bubble has been shown
+       *   "schedule" wait, then reveal one more
+       */
+      function nextRevealAction(entry, total, reducedMotion) {
+        if (entry.done) return "settled";
+        if (reducedMotion) return "reduced";
+        if (total === 0) return "wait";
+        if (entry.shown >= total) return "finish";
+        return "schedule";
+      }
+
+      /**
        * Flatten visible blocks into render units. `bubble` units take part in
        * the paced reveal; everything else (reasoning, images, stubs) is shown
        * as soon as it exists.
@@ -628,8 +647,11 @@
         useEffect(
           function () {
             if (streaming) return undefined;
-            if (!entry.streaming || entry.done) return undefined;
-            if (prefersReducedMotion()) {
+            if (!entry.streaming) return undefined;
+
+            var action = nextRevealAction(entry, total, prefersReducedMotion());
+
+            if (action === "reduced") {
               if (!entry.motionLogged) {
                 entry.motionLogged = true;
                 console.log(
@@ -639,7 +661,8 @@
               entry.done = true;
               return undefined;
             }
-            if (entry.shown >= total) {
+            if (action === "settled" || action === "wait") return undefined;
+            if (action === "finish") {
               entry.done = true;
               return undefined;
             }
@@ -687,7 +710,7 @@
         // Only in the answer half; the reasoning fold has its own "思考中…".
         if (props.groupPart !== "reasoning") {
           if (streaming && bufferStreaming) children.push(typingNode());
-          else if (shouldAnimate && shown < total) children.push(typingNode());
+          else if (shouldAnimate && (total === 0 || shown < total)) children.push(typingNode());
         }
 
         if (!children.length) return null;
@@ -1019,6 +1042,8 @@
             reveals = {};
             console.log("[spike-humanize] reveal memory cleared");
           },
+          // FR-1: pure decision helper, exposed so smoke can lock it down.
+          planReveal: nextRevealAction,
           // FR-1: what the reveal machinery currently believes.
           reveals: function () {
             var out = {};
