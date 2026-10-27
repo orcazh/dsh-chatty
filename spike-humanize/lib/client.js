@@ -198,12 +198,15 @@
         });
       }
 
+      // `--dsw-alias-bg-layer-1` resolves to the *base* colour (theme layer 1 ==
+      // page background), which is why the first attempt showed only a border.
+      // Tint the theme's own text colour instead: adapts to light and dark.
       var BUBBLE_STYLE = {
-        background: "var(--dsw-alias-bg-layer-1, rgba(127,127,127,0.10))",
+        background: "color-mix(in srgb, var(--dsw-alias-label-primary, #888888) 9%, transparent)",
         border: "0.5px solid var(--dsw-alias-border-l1, rgba(127,127,127,0.20))",
-        borderRadius: 14,
+        borderRadius: 16,
         padding: "10px 14px",
-        maxWidth: 680,
+        maxWidth: "min(680px, 100%)",
         lineHeight: 1.7,
         overflowWrap: "anywhere",
       };

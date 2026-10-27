@@ -66,36 +66,60 @@ jsx(primitives.MarkdownText, {
 
 ## G1c 渲染能力保留
 
-采用策略：**非纯文本步骤整体交还原生组件**。
+**结论：通过（实机确认，2026-10-27）**
 
-`ui-slots` 的 `RootEntry` 从 `entry.component` 取组件，因此我们可以在渲染时从
-`entriesOfSlot` 里找到**非本插件**的那一条（`component.__spike !== true`），用它原样渲染：
+### 走过的弯路：不能「借」原生组件
 
-```js
-function nativeEntryOf(slots, self) {
-  return listEntries(slots).find((e) =>
-    e.options?.key === "assistant-step" &&
-    e.component !== self &&
-    !e.component?.__spike);
-}
-```
+最初设想是把含 reasoning / tool-call 的步骤**整体交还原生 `AssistantNodeView`**。
+实测与源码双重否证：
 
-于是：
+1. `entriesOfSlot` 每个 key **只返回被选举的一条**（我们的 -100 那条），原生那条拿不到。
+   → `nativeEntryOf()` 永远返回 null，所有路径退化成 `<pre>`，视觉上与原生无差别（用户实测反馈）。
+2. 即使改用 `slots.entries(key)`（返回全部候选）也救不回来：`ui-slots` 的 `renderEntry`
+   给组件注入的是
+   ```js
+   jsx(Comp, { ...kit, ...injected, ...slotInjected.props, ...ownerProps })
+   ```
+   而 `AssistantNodeView` 需要 `useDisclosure / useGroupAction / usePresentation / useTurnData /
+   renderSlot / t` —— 这些来自 `kit` 与 entry 声明的 `inject`，插件无法伪造。
 
-- 只含 `text` block 的步骤 → 拆成多气泡（`MarkdownText` 渲染每一段）；
-- 含 `tool-call` / `reasoning` / `image` 的步骤 → **整体调用原生组件**，工具卡片、折叠、图片全部保留。
+因此**必须自己重建渲染**。好消息是重建量很小，因为原生每种 block 的做法都很朴素：
 
-这一策略同时满足 FR-1「只拆分最终回答文本」。
-
-| 能力 | 保留 | 现象 |
+| block | 原生做法 | 我们的做法 |
 | :--- | :--- | :--- |
-| Markdown 段落 / 列表 / 代码块 | 待实测 | 使用 `MarkdownText`，预期与原样一致 |
-| reasoning 折叠 | 待实测 | 走原生组件 |
-| tool-call 卡片 | 待实测 | 走原生组件 |
-| 图片 | 待实测 | 走原生组件 |
-| 复制 / 重试 | 待实测 | 走原生组件 |
-| `presentation`（工作详情） | 待实测 | 走原生组件 |
-| 无 `data-slot-error` | 待实测 | — |
+| `text` | `MarkdownText` | 复用 `ui-primitives` 的 `MarkdownText` |
+| `reasoning` | `ProcessReasoning` 折叠行 | 自建 `<details>` + `MarkdownText` |
+| `image` | `renderSlot("conversation.chat.message.images")` | 暂显示占位（重新声明子 slot 有 ownership 风险） |
+| `tool-call` | **`break`，什么都不渲染** | 同样跳过 |
+| 其它 | `JsonBlock` | 一行占位提示 |
+
+### 两个必须遵守的实现约束
+
+1. **必须按 `groupPart` 分流。**
+   同一个 `assistant-step` 节点会被渲染两次：`groupPart: "reasoning"` 给过程折叠区，
+   `groupPart: "response"` 给回答区。原生 `AssistantMarkdown` 正是靠这个过滤
+   （`part === "reasoning"` 只留 reasoning，`"response"` 只留非 reasoning）。
+   不照做的话，同一个回复会出现两遍。
+2. **`--dsw-alias-bg-layer-1` 等于页面底色。**
+   主题里 layer 1 = `--dsw-static-neutral-bluish-00`（浅色）/ `…-875`（深色），
+   也就是和背景几乎同色 —— 用它做气泡底色只会看到一条边框（首版实测）。
+   正确做法是按主题文字色做半透明混合：
+   `color-mix(in srgb, var(--dsw-alias-label-primary) 9%, transparent)`。
+   `color-mix` 是 DSH 自身 CSS 就在用的写法，可安全使用。
+
+### 实机结果
+
+| 检查项 | 结果 |
+| :--- | :--- |
+| 纯文本回复拆成多气泡 | **通过**（3 段 → 3 个独立圆角框） |
+| 是否重复渲染 | **通过**（没有重复） |
+| 含工具调用的回复 | 正常，工具调用不进入气泡 |
+| 工具卡片是否丢失 | **无影响**（`tool-call` 是独立 key 的节点，本插件未触碰） |
+| 负数优先级 + 运行时开关 | 通过（沿用 G1a） |
+
+`tool-call` 在 `conversation.chat.node` 下是**独立 key 的一个 node**，不在 `assistant-step`
+内部渲染；原生 `AssistantMarkdown` 遇到 `tool-call` block 直接 `break`。
+所以遮蔽 `assistant-step` 不会影响工具调用展示。
 
 ---
 
@@ -104,13 +128,16 @@ function nativeEntryOf(slots, self) {
 1. **`jsx` 的第三个参数是 `key`，不是 children。**
    `jsx("div", props, child)` 会把 child 当成 key，内容静默丢失。children 必须写进 `props.children`。
    （离线冒烟测试已经覆盖这一条。）
-2. 气泡容器不要依赖 `--dsh-color-bg-elevated`，该变量名不存在；应使用主题真实变量或回退值。
+2. **气泡底色不能用 `--dsw-alias-bg-layer-1` / `--dsh-color-bg-elevated`。**
+   前者等于页面底色，后者不存在。用 `color-mix` 混 `--dsw-alias-label-primary`。
+3. **`AssistantNodeView` 的 props 无法从插件侧伪造**，不要试图「借」原生组件。
 
 ---
 
 ## 结论与下一步
 
 - G1a：**通过**。负数优先级遮蔽可用，且可运行时开关。
-- G1b：**通过**。`MarkdownText` 可直接复用，无需重建渲染层。
-- G1c：策略已定（非文本步骤交还原生），待实机确认工具卡片 / reasoning / 图片。
-- 下一步：实机跑 `bubbles` 模式，确认气泡外观与原生一致；然后进入 G2 采样。
+- G1b：**通过**。`MarkdownText` 可直接复用。
+- G1c：**通过**。自己重建 block 渲染后，纯文本回复可拆成多气泡，无重复、不伤工具展示。
+- 下一步：进入 G2（L2 段落提示采样）。
+
