@@ -603,6 +603,13 @@
       // rendered every bubble at once — it thought the reply was history.
       var reveals = {};
       var REVEAL_MEMORY_LIMIT = 400;
+      // Timers live here, NOT inside the component. The chat UI re-renders (and
+      // sometimes remounts) the row constantly; a per-instance `setTimeout`
+      // gets cancelled by the effect cleanup long before it fires, which is why
+      // the reveal froze after the first bubble. The scheduler below owns its
+      // own clock and only *notifies* whatever instance happens to be mounted.
+      var revealTimers = {};
+      var revealListeners = {};
 
       function revealOf(nodeId) {
         var entry = reveals[nodeId];
@@ -617,6 +624,44 @@
         entry = { streaming: false, shown: 0, done: false };
         reveals[nodeId] = entry;
         return entry;
+      }
+
+      function notifyReveal(nodeId) {
+        var listeners = revealListeners[nodeId];
+        if (!listeners || !listeners.length) return;
+        var snapshot = listeners.slice();
+        for (var i = 0; i < snapshot.length; i++) {
+          try {
+            snapshot[i]();
+          } catch (error) {
+            console.warn("[spike-humanize] reveal listener failed: " + errText(error));
+          }
+        }
+      }
+
+      /** Advance the reveal on its own clock until every bubble is visible. */
+      function scheduleReveal(nodeId, total, weights) {
+        if (revealTimers[nodeId]) return;
+        var entry = reveals[nodeId];
+        if (!entry || entry.done || entry.shown >= total) return;
+
+        var wait = entry.shown === 0 ? FIRST_BUBBLE_MS : gapAfter(weights[entry.shown] || 0);
+        revealTimers[nodeId] = setTimeout(function () {
+          delete revealTimers[nodeId];
+          var current = reveals[nodeId];
+          if (!current) return;
+          current.shown += 1;
+          if (current.shown >= total) current.done = true;
+          notifyReveal(nodeId);
+          if (!current.done) scheduleReveal(nodeId, total, weights);
+        }, wait);
+      }
+
+      function stopReveal(nodeId) {
+        if (revealTimers[nodeId]) {
+          clearTimeout(revealTimers[nodeId]);
+          delete revealTimers[nodeId];
+        }
       }
 
       function renderBubbles(props) {
@@ -636,18 +681,42 @@
 
         var built = buildUnits(props, streaming);
         var total = built.bubbles.length;
+        var weights = [];
+        for (var w = 0; w < built.bubbles.length; w++) weights.push(built.bubbles[w].weight);
 
         // Reveal only for replies we actually watched being generated. History,
         // finished reveals and reduced-motion users get everything at once.
         // While buffering, the answer stays hidden no matter what.
         var buffered = streaming && bufferStreaming;
-        var shouldAnimate = !streaming && entry.streaming && !entry.done && !prefersReducedMotion();
+        var shouldAnimate =
+          revealable && !streaming && entry.streaming && !entry.done && !prefersReducedMotion();
         var shown = buffered ? 0 : shouldAnimate ? Math.min(entry.shown, total) : total;
+
+        // Re-render on every tick the scheduler makes, whatever our mount state.
+        useEffect(
+          function () {
+            if (!revealable) return undefined;
+            var listener = function () {
+              bump(function (count) {
+                return count + 1;
+              });
+            };
+            var list = revealListeners[nodeId] || (revealListeners[nodeId] = []);
+            list.push(listener);
+            return function () {
+              var current = revealListeners[nodeId];
+              if (!current) return;
+              var index = current.indexOf(listener);
+              if (index >= 0) current.splice(index, 1);
+            };
+          },
+          [nodeId, revealable],
+        );
 
         useEffect(
           function () {
-            if (streaming) return undefined;
-            if (!entry.streaming) return undefined;
+            if (!revealable || streaming) return undefined;
+            if (!entry.streaming || entry.done) return undefined;
 
             var action = nextRevealAction(entry, total, prefersReducedMotion());
 
@@ -661,9 +730,8 @@
               entry.done = true;
               return undefined;
             }
-            if (action === "settled" || action === "wait") return undefined;
-            if (action === "finish") {
-              entry.done = true;
+            if (action === "settled" || action === "wait" || action === "finish") {
+              if (action === "finish") entry.done = true;
               return undefined;
             }
             if (!entry.logged) {
@@ -680,19 +748,8 @@
                   "ms per char",
               );
             }
-            // Pace by the bubble that is ABOUT to appear: a long message takes
-            // longer to "type". Milliseconds per character, plus a base pause.
-            var next = built.bubbles[entry.shown];
-            var wait = entry.shown === 0 ? FIRST_BUBBLE_MS : gapAfter(next ? next.weight : 0);
-            var timer = setTimeout(function () {
-              entry.shown += 1;
-              bump(function (count) {
-                return count + 1;
-              });
-            }, wait);
-            return function () {
-              clearTimeout(timer);
-            };
+            scheduleReveal(nodeId, total, weights);
+            return undefined;
           },
           [streaming, total, entry.shown, nodeId],
         );
@@ -1039,6 +1096,7 @@
           // FR-1: forget which replies already played, so the next render of an
           // old reply animates again (useful when tuning the cadence).
           resetReveal: function () {
+            Object.keys(revealTimers).forEach(stopReveal);
             reveals = {};
             console.log("[spike-humanize] reveal memory cleared");
           },
