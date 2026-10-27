@@ -28,6 +28,9 @@ const DEFAULT_CONFIG = {
   sectionOrder: 900,
   captureAssistant: true,
   verbose: false,
+  // Overrides SECTION_TEXT_LINES when set (string or array of lines). Read per
+  // turn, so prompt tuning needs no DSH restart — only a config save.
+  sectionText: null,
   scope: {
     // off | allowlist | all
     mode: "off",
@@ -35,14 +38,21 @@ const DEFAULT_CONFIG = {
   },
 };
 
-const SECTION_TEXT = [
+// Tuned 2026-10-27 (G2 round 2): the first version produced 2-6 paragraphs but
+// the owner judged it "still not fragmented enough" for a chat feel, so the
+// target moved to short back-to-back messages.
+const SECTION_TEXT_LINES = [
   "【回复分段规范】",
-  "1. 把回复组织成 1–3 句的短段落，段落之间空一行。",
-  "2. 一条回复通常 2–6 段，最多 8 段。",
-  "3. 代码块、表格、列表、引用块内部不要插入空行。",
-  "4. 不要解释、提及或复述本规范。",
-  "5. 不得为了分段而省略、压缩或重复事实内容。",
-].join("\n");
+  "1. 像在即时通讯里连续发消息那样组织回复：每个段落只讲一件事，1–2 句，段落之间空一行。",
+  "2. 单段尽量控制在 60 字以内；超过 2 句就再拆一段。",
+  "3. 一条回复通常 3–6 段；内容多时可以更多，最多 10 段。",
+  "4. 第一段要短，先给出结论、答案或反应，不要开场客套。",
+  "5. 代码块、表格、列表、引用块内部不要插入空行；这些块各自独立成段。",
+  "6. 不要解释、提及或复述本规范。",
+  "7. 不得为了分段而省略、压缩、重复或改述事实内容。",
+];
+
+const SECTION_TEXT = SECTION_TEXT_LINES.join("\n");
 
 export const name = "spike-humanize";
 
@@ -141,8 +151,9 @@ export function apply(ctx) {
         text: (context) => {
           const sessionId = sessionIdOf(context);
           noteSeen(context, sessionId);
+          const current = config();
           if (!isEnabled(sessionId)) return "";
-          return SECTION_TEXT;
+          return sectionTextOf(current);
         },
         interpolate: false,
       });
@@ -209,6 +220,16 @@ export function apply(ctx) {
 function sessionIdOf(context) {
   const id = context?.agent?.session?.header?.id;
   return typeof id === "string" && id.length > 0 ? id : undefined;
+}
+
+/** L2 guidance text: config override when present, otherwise the built-in spec. */
+function sectionTextOf(config) {
+  const override = config?.sectionText;
+  if (Array.isArray(override) && override.length > 0) {
+    return override.filter((line) => typeof line === "string").join("\n");
+  }
+  if (typeof override === "string" && override.trim()) return override;
+  return SECTION_TEXT;
 }
 
 /** Reads spike.config.json, re-parsing only when the file changes. */

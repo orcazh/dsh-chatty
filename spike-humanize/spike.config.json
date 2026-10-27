@@ -3,6 +3,7 @@
   "sectionOrder": 900,
   "captureAssistant": true,
   "verbose": false,
+  "sectionText": null,
   "scope": {
     "mode": "allowlist",
     "sessions": [

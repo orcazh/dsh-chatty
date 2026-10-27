@@ -11,7 +11,7 @@
  */
 
 import assert from "node:assert/strict";
-import { readFileSync, statSync, truncateSync, writeFileSync } from "node:fs";
+import { readFileSync, statSync, truncateSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -326,7 +326,8 @@ async function testHost() {
     assert.equal(sections[0].interpolate, false);
 
     const allowedText = sections[0].text({ agent: { session: { header: { id: sessionId } } } });
-    assert.ok(allowedText.includes("短段落"), "section text missing L2 guidance");
+    assert.ok(allowedText.includes("分段规范"), "section text missing L2 guidance");
+    assert.ok(allowedText.includes("3–6 段"), "section target must be 3-6 paragraphs");
 
     const deniedText = sections[0].text({ agent: { session: { header: { id: "not-allowed" } } } });
     assert.equal(deniedText, "", "non-allowlisted session must inject nothing");
@@ -373,7 +374,28 @@ async function testHost() {
     assert.equal(record.step, 3);
     assert.equal(record.paragraphs, 2);
 
-    console.log("  host: ok (scope gating + section + capture)");
+    // `sectionText` must be hot-swappable from config: prompt tuning should
+    // never require another DSH restart.
+    writeFileSync(
+      configPath,
+      JSON.stringify(
+        {
+          ...liveConfig,
+          scope: { mode: "allowlist", sessions: [sessionId] },
+          sectionText: ["CUSTOM-SECTION-LINE"],
+        },
+        null,
+        2,
+      ) + "\n",
+    );
+    utimesSync(configPath, new Date(), new Date(Date.now() + 2000));
+    assert.equal(
+      sections[0].text({ agent: { session: { header: { id: sessionId } } } }),
+      "CUSTOM-SECTION-LINE",
+      "sectionText override from config must win",
+    );
+
+    console.log("  host: ok (scope gating + section + capture + hot sectionText)");
   } finally {
     writeFileSync(configPath, original, "utf8");
     try {
