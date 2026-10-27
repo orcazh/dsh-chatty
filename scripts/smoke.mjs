@@ -42,6 +42,9 @@ const React = {
   useRef(initial) {
     return { current: initial };
   },
+  useState(initial) {
+    return [typeof initial === "function" ? initial() : initial, () => {}];
+  },
 };
 
 const jsx = (type, props) => ({ type, props });
@@ -184,11 +187,18 @@ async function testClient(mode) {
   }
 
   if (mode === "bubbles") {
-    // A running reply stays in one bubble; splitting mid-stream would jitter.
+    // FR-1: while the model is still generating, no answer text is shown — only
+    // a typing indicator. The whole reply appears at once afterwards.
     const streaming = entry.component({
       node: { data: { status: "running", blocks: [{ kind: "text", text: "第一段。\n\n第二段。" }] } },
     });
-    assert.equal(streaming.props.children.length, 1, "streaming must not split");
+    const streamingKids = streaming.props.children;
+    assert.equal(streamingKids.length, 1, "streaming must render exactly one placeholder");
+    assert.equal(streamingKids[0].props["data-spike"], "typing", "streaming must show the typing dots");
+    assert.ok(
+      JSON.stringify(streaming).indexOf("第一段") === -1,
+      "streaming must not leak the partial answer into the DOM",
+    );
 
     // `tool-call` renders nothing natively, so it renders nothing here either.
     const onlyTool = entry.component({

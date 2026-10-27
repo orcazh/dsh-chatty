@@ -39,6 +39,7 @@
       var jsx = require("react/jsx-runtime").jsx;
       var useEffect = React.useEffect;
       var useRef = React.useRef;
+      var useState = React.useState;
 
       var primitives = null;
       var primitivesWarned = false;
@@ -413,14 +414,101 @@
         }
       }
 
-      function renderBubbles(props) {
-        logPropsOnce(props);
+      // --- FR-1: buffered, paced reveal ------------------------------------
+      // The model streams token by token, but a person does not: they finish
+      // typing, hit send, then send the next message. So while `status` is
+      // "running" we show a typing indicator instead of the growing text, and
+      // once the step settles we reveal whole bubbles one at a time.
+      var BUFFER_KEY = "humanize.spike.buffer";
+      var GAP_KEY = "humanize.spike.gap";
 
-        var data = (props.node && props.node.data) || {};
-        var streaming = data.status === "running";
+      var bufferStreaming = readSetting(BUFFER_KEY, "on") !== "off";
+      var bubbleGap = Number(readSetting(GAP_KEY, "450"));
+      if (!Number.isFinite(bubbleGap) || bubbleGap < 0) bubbleGap = 450;
+
+      var FIRST_BUBBLE_MS = 200;
+      var PER_CHAR_MS = 6;
+      var MIN_GAP_MS = 400;
+      var MAX_GAP_MS = 1200;
+
+      // Nodes whose cadence already played (turn:step). Module scope on purpose:
+      // scrolling a node out and back in must not replay the whole reveal.
+      var animatedNodes = {};
+
+      var TYPING_CSS_ID = "spike-humanize-typing-css";
+
+      function ensureTypingCss() {
+        try {
+          if (document.getElementById(TYPING_CSS_ID)) return;
+          var style = document.createElement("style");
+          style.id = TYPING_CSS_ID;
+          style.textContent =
+            "@keyframes spike-typing{0%,60%,100%{opacity:.25;transform:translateY(0)}30%{opacity:.9;transform:translateY(-2px)}}" +
+            "@media (prefers-reduced-motion:reduce){[data-spike='typing'] span{animation:none!important;opacity:.5!important}}";
+          document.head.appendChild(style);
+        } catch {
+          // no DOM: the indicator simply stays static
+        }
+      }
+
+      function prefersReducedMotion() {
+        try {
+          return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+        } catch {
+          return false;
+        }
+      }
+
+      function typingNode() {
+        ensureTypingCss();
+        var dots = [0, 1, 2].map(function (index) {
+          return jsx("span", {
+            key: index,
+            style: {
+              width: 6,
+              height: 6,
+              borderRadius: 3,
+              background: "var(--dsw-alias-label-tertiary, currentColor)",
+              opacity: 0.25,
+              display: "inline-block",
+              animation: "spike-typing 1.2s infinite ease-in-out",
+              animationDelay: index * 0.16 + "s",
+            },
+          });
+        });
+        return jsx("div", {
+          key: "typing",
+          "data-spike": "typing",
+          style: {
+            display: "flex",
+            alignItems: "center",
+            gap: 5,
+            padding: "10px 14px",
+            borderRadius: 16,
+            background: BUBBLE_STYLE.background,
+            border: BUBBLE_STYLE.border,
+            width: "fit-content",
+          },
+          children: dots,
+        });
+      }
+
+      /** Gap before revealing the bubble AFTER one of `length` characters. */
+      function gapAfter(length) {
+        var wait = bubbleGap + length * PER_CHAR_MS;
+        return Math.max(MIN_GAP_MS, Math.min(MAX_GAP_MS, wait));
+      }
+
+      /**
+       * Flatten visible blocks into render units. `bubble` units take part in
+       * the paced reveal; everything else (reasoning, images, stubs) is shown
+       * as soon as it exists.
+       */
+      function buildUnits(props, streaming) {
         var blocks = visibleBlocks(props);
-        var children = [];
+        var units = [];
         var key = 0;
+        var bubbleIndex = 0;
 
         for (var i = 0; i < blocks.length; i++) {
           var block = blocks[i];
@@ -428,25 +516,28 @@
           if (block.kind === "text") {
             var text = String(block.text === null || block.text === undefined ? "" : block.text);
             if (!text.trim()) continue;
-            // Splitting mid-stream would make bubbles jump around, so the
-            // running reply stays in one bubble and settles into many.
+            // While streaming we never split: a paragraph cut in half would
+            // re-flow on every token. Buffered mode hides it anyway.
             var parts = streaming ? [text] : splitParagraphs(text);
             for (var p = 0; p < parts.length; p++) {
-              children.push(
-                jsx("div", {
+              units.push({
+                bubble: true,
+                index: bubbleIndex++,
+                weight: parts[p].length,
+                node: jsx("div", {
                   key: "t" + key++,
                   "data-spike": "bubble",
                   style: BUBBLE_STYLE,
-                  children: markdownOr(parts[p], streaming),
+                  children: markdownOr(parts[p], false),
                 }),
-              );
+              });
             }
             continue;
           }
 
           if (block.kind === "reasoning") {
             if (!String(block.text || "").trim()) continue;
-            children.push(reasoningNode(block, key++, streaming));
+            units.push({ bubble: false, index: -1, weight: 0, node: reasoningNode(block, key++, streaming) });
             continue;
           }
 
@@ -457,22 +548,91 @@
               i += 1;
             }
             var images = imagesNode(group, key++, props);
-            if (images) children.push(images);
+            if (images) units.push({ bubble: false, index: -1, weight: 0, node: images });
             continue;
           }
 
           // `tool-call` renders nothing natively; unknown kinds get a stub so
           // content is never silently swallowed.
           if (block.kind !== "tool-call") {
-            children.push(
-              jsx("div", {
+            units.push({
+              bubble: false,
+              index: -1,
+              weight: 0,
+              node: jsx("div", {
                 key: "u" + key++,
                 "data-spike": "unknown",
                 style: { fontSize: 12, color: "var(--dsw-alias-label-tertiary, inherit)" },
                 children: "（未支持的 block：" + block.kind + "）",
               }),
-            );
+            });
           }
+        }
+
+        return { units: units, bubbles: units.filter(function (unit) { return unit.bubble; }) };
+      }
+
+      function renderBubbles(props) {
+        logPropsOnce(props);
+
+        var data = (props.node && props.node.data) || {};
+        var streaming = data.status === "running";
+        var nodeId = String(data.turn) + ":" + String(data.step);
+
+        var stateRef = useRef(null);
+        var bump = useState(0)[1];
+
+        if (!stateRef.current || stateRef.current.id !== nodeId) {
+          stateRef.current = { id: nodeId, sawStreaming: streaming, shown: 0, done: false };
+        }
+        var state = stateRef.current;
+        if (streaming) state.sawStreaming = true;
+
+        var built = buildUnits(props, streaming);
+        var total = built.bubbles.length;
+
+        // Reveal only for replies that were actually watched growing. History,
+        // already-animated nodes and reduced-motion users get everything at once.
+        var shouldAnimate =
+          state.sawStreaming && !state.done && !animatedNodes[nodeId] && !prefersReducedMotion();
+        var shown = shouldAnimate ? Math.min(state.shown, total) : total;
+
+        useEffect(
+          function () {
+            if (streaming) return undefined;
+            if (!state.sawStreaming || state.done || animatedNodes[nodeId]) return undefined;
+            if (prefersReducedMotion()) return undefined;
+            if (state.shown >= total) {
+              state.done = true;
+              animatedNodes[nodeId] = true;
+              return undefined;
+            }
+            var wait =
+              state.shown === 0 ? FIRST_BUBBLE_MS : gapAfter(built.bubbles[state.shown - 1].weight);
+            var timer = setTimeout(function () {
+              state.shown += 1;
+              bump(function (count) {
+                return count + 1;
+              });
+            }, wait);
+            return function () {
+              clearTimeout(timer);
+            };
+          },
+          [streaming, total, state.shown, nodeId],
+        );
+
+        var children = [];
+        for (var u = 0; u < built.units.length; u++) {
+          var unit = built.units[u];
+          if (unit.bubble && unit.index >= shown) continue;
+          children.push(unit.node);
+        }
+
+        // Still generating: show placeholder dots instead of growing text.
+        // Only in the answer half — the reasoning fold has its own "思考中…".
+        if (streaming && bufferStreaming && props.groupPart !== "reasoning") {
+          children.push(typingNode());
         }
 
         if (!children.length) return null;
@@ -745,6 +905,29 @@
           textStats: function () {
             return summarize(listEntries(slots));
           },
+          // FR-1: hide the token-by-token stream, reveal whole bubbles instead.
+          buffer: function (next) {
+            bufferStreaming = next !== "off" && next !== false;
+            window.localStorage.setItem(BUFFER_KEY, bufferStreaming ? "on" : "off");
+            console.log("[spike-humanize] bufferStreaming -> " + bufferStreaming);
+            return bufferStreaming;
+          },
+          // FR-1: base pause before each follow-up bubble, in milliseconds.
+          gap: function (ms) {
+            var next = Number(ms);
+            if (Number.isFinite(next) && next >= 0) {
+              bubbleGap = next;
+              window.localStorage.setItem(GAP_KEY, String(next));
+            }
+            console.log("[spike-humanize] bubbleGap -> " + bubbleGap);
+            return bubbleGap;
+          },
+          // FR-1: forget which replies already played, so the next render of an
+          // old reply animates again (useful when tuning the cadence).
+          resetReveal: function () {
+            animatedNodes = {};
+            console.log("[spike-humanize] reveal memory cleared");
+          },
           // G7: register the bubbles view into ONE session's slot scope.
           scopedTest: scopedTest,
           // G7: keep it alive across conversation switches.
@@ -788,6 +971,8 @@
         } else {
           mount();
         }
+
+        ensureTypingCss();
 
         // G6: dump the sessions service once the app has settled, so it can be
         // read straight off the console without typing anything.
