@@ -175,6 +175,12 @@ async function testClient(mode) {
     assert.equal(firstBubble.props["data-spike"], "bubble");
     assert.equal(firstBubble.props.children.props.text, "第一段。");
     assert.equal(firstBubble.props.children.type, MarkdownText, "bubbles must use MarkdownText");
+    // Without labels the code-fence renderer throws and the reply vanishes.
+    assert.ok(
+      firstBubble.props.children.props.labels.code.copyLabel,
+      "MarkdownText must receive labels or code blocks throw",
+    );
+    assert.ok(firstBubble.props.children.props.labels.footnotes, "MarkdownText must receive footnote labels");
   }
 
   if (mode === "bubbles") {

@@ -143,6 +143,14 @@ jsx(primitives.MarkdownText, {
    否则代码块内部空行会被当成段落边界，代码块被切成两个气泡。
    `splitParagraphs` 现在做围栏状态机：围栏内的空行不切分，且闭合围栏必须同行同字符、长度不短于开启围栏、且无 info string。
 
+6. **`MarkdownText` 不传 `labels` 会抛异常，整条回复会消失。**
+   源码 `iU()`（code fence 渲染）里直接读 `r.labels.code.copyLabel` / `copiedLabel` /
+   `toolbarLabels`，脚注读 `labels.footnotes`。`labels` 为 `undefined` 时抛
+   `TypeError`，槽位的 `guarded()` 会把它变成**空的 `data-slot-error` 盒子**。
+   原生路径永远传 `markdownLabels(t)`，所以看不到这个问题。
+   → 插件侧必须自带这份 labels（`MARKDOWN_LABELS`），并给渲染加 try/catch 保底，
+   保证「渲染失败也不能吞掉回复」。
+
 ---
 
 ## 结论与下一步

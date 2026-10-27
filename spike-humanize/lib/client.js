@@ -274,30 +274,56 @@
         overflowWrap: "anywhere",
       };
 
+      // `MarkdownText` is callable without labels, but its code-fence and
+      // footnote renderers dereference `labels.code.*` / `labels.footnotes`.
+      // Passing `undefined` makes a reply that contains a code block THROW,
+      // which the slot turns into an empty `data-slot-error` box — the whole
+      // reply disappears. The native path always passes this exact shape.
+      var MARKDOWN_LABELS = {
+        code: {
+          copyLabel: "复制",
+          copiedLabel: "已复制",
+          toolbarLabels: {
+            codeLabel: "代码",
+            wrapLabel: "自动换行",
+            unwrapLabel: "取消换行",
+          },
+        },
+        footnotes: "脚注",
+      };
+
       var loggedProps = false;
 
       function logPropsOnce(props) {
         if (loggedProps) return;
         loggedProps = true;
-        var keys = Object.keys(props || {}).sort();
-        var probe = {};
-        ["t", "renderSlot", "loadImage", "useDisclosure", "usePresentation", "useGroupAction", "useTurnData", "openFile", "fileMentions"].forEach(
-          function (key) {
+        try {
+          var keys = Object.keys(props || {}).sort();
+          var probe = {};
+          [
+            "t",
+            "renderSlot",
+            "loadImage",
+            "useDisclosure",
+            "usePresentation",
+            "useGroupAction",
+            "useTurnData",
+            "openFile",
+            "fileMentions",
+          ].forEach(function (key) {
             probe[key] = typeof (props || {})[key];
-          },
-        );
-        console.log("[spike-humanize] view props keys: " + keys.join(", "));
-        console.log("[spike-humanize] view props probes " + safeJson(probe));
-        console.log("[spike-humanize] groupPart=" + String((props || {}).groupPart));
-        // FR-12: if the node knows its session, per-session gating is feasible
-        // on the client without the host fingerprint pipeline.
-        var sid = (props || {}).sessionId;
-        console.log(
-          "[spike-humanize] sessionId=" +
-            String(typeof sid) +
-            " " +
-            String(typeof sid === "string" ? sid : sid && sid.id ? sid.id : JSON.stringify(sid)).slice(0, 64),
-        );
+          });
+          console.log("[spike-humanize] view props keys: " + keys.join(", "));
+          console.log("[spike-humanize] view props probes " + safeJson(probe));
+          console.log("[spike-humanize] groupPart=" + String((props || {}).groupPart));
+          // FR-12: if the node knows its session, per-session gating is
+          // feasible on the client without the host fingerprint pipeline.
+          var sid = (props || {}).sessionId;
+          console.log("[spike-humanize] sessionId is " + typeof sid + ": " + String(sid).slice(0, 64));
+        } catch (error) {
+          // Logging must never take the reply down with it.
+          console.warn("[spike-humanize] props log failed: " + String((error && error.message) || error));
+        }
       }
 
       function markdownOr(text, streaming) {
@@ -305,7 +331,11 @@
         if (!prims) {
           return jsx("span", { style: { whiteSpace: "pre-wrap" }, children: text });
         }
-        return jsx(prims.MarkdownText, { text: text, streaming: streaming === true });
+        return jsx(prims.MarkdownText, {
+          text: text,
+          streaming: streaming === true,
+          labels: MARKDOWN_LABELS,
+        });
       }
 
       function reasoningNode(block, key, streaming) {
@@ -360,6 +390,21 @@
       }
 
       function BubbleView(props) {
+        try {
+          return renderBubbles(props);
+        } catch (error) {
+          // A thrown render blanks the whole message (the slot shows an empty
+          // `data-slot-error` face). Never lose the text: show it plainly.
+          console.error("[spike-humanize] bubble render failed", error);
+          return jsx("pre", {
+            "data-spike": "bubbles-error",
+            style: { whiteSpace: "pre-wrap", fontFamily: "inherit", margin: 0 },
+            children: textOf(props.node),
+          });
+        }
+      }
+
+      function renderBubbles(props) {
         logPropsOnce(props);
 
         var data = (props.node && props.node.data) || {};
