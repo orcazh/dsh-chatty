@@ -2,5 +2,9 @@
   "promptSection": true,
   "sectionOrder": 900,
   "captureAssistant": true,
-  "verbose": false
+  "verbose": false,
+  "scope": {
+    "mode": "off",
+    "sessions": []
+  }
 }

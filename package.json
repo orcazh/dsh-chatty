@@ -8,6 +8,7 @@
     "check": "node --check spike-humanize/lib/host.js && node --check spike-humanize/lib/client.js",
     "smoke": "node scripts/smoke.mjs",
     "verify": "node scripts/verify-mount.mjs",
+    "scope": "node scripts/scope.mjs",
     "install:spike": "node scripts/install-spike.mjs",
     "uninstall:spike": "node scripts/uninstall-spike.mjs"
   }

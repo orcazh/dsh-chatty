@@ -8,13 +8,23 @@
 
 ## G1a 能否遮蔽
 
+**2026-10-27 实测**：在 priority `0` 注册时报错——
+
+```
+Uncaught Error: keyed slot "conversation.chat.node" already has an entry for key
+"assistant-step" at priority 0 (registered by spike-humanize-client)
+— register at a different priority to shadow it (lowest renders)
+```
+
+结论：**遮蔽是 API 明示支持的能力**，且 `priority` 数值**越小越优先**。内置 `assistant-step` 位于 `0`，因此必须用负数。
+
 | priority | 是否覆盖原生 | 备注 |
 | :--- | :--- | :--- |
-| -100 |  |  |
-| 0 |  |  |
-| 50 |  |  |
-| 100 |  |  |
-| 1000 |  |  |
+| -100 | 待实机确认（探针默认值） | 低于内置 `0`，预期覆盖 |
+| 0 | **抛错** | 与内置同 key 同优先级，注册被拒绝 |
+| 50 | 不覆盖（预期） | 高于内置 |
+| 100 | 不覆盖（预期） | 高于内置 |
+| 1000 | 不覆盖（预期） | 高于内置 |
 
 `entriesOfSlot` 顺序（粘贴 `window.__humanizeSpike.dump()` 输出）：
 

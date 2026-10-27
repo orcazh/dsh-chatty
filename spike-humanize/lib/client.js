@@ -2,9 +2,12 @@
  * Phase 0 probe — client half.
  *
  * Modes (localStorage: humanize.spike.mode):
- *   probe  - shadow `assistant-step` with a debug card (default)
+ *   off    - default: do not register anything; native renderer stays
+ *   probe  - shadow `assistant-step` with a debug card
  *   shadow - shadow it with a naive multi-bubble view (visual proof for G1)
- *   off    - do not register anything; native renderer stays
+ *
+ * The probe is off by default so it cannot disturb normal coding sessions.
+ * The real plugin will follow the host-side per-session scope in FR-12.
  *
  * Priority (localStorage: humanize.spike.priority, default 0) lets us find
  * out which direction the keyed-slot priority runs without rebuilding.
@@ -40,8 +43,8 @@
       var name = "spike-humanize-client";
       var inject = ["slots"];
 
-      var mode = readSetting(MODE_KEY, "probe");
-      var priority = Number(readSetting(PRIORITY_KEY, "0"));
+      var mode = readSetting(MODE_KEY, "off");
+      var priority = Number(readSetting(PRIORITY_KEY, "-100"));
       if (!Number.isFinite(priority)) priority = 0;
 
       function textOf(node) {
@@ -204,6 +207,34 @@
         });
       }
 
+      var PRIORITY_FALLBACKS = [-100, -1, -1000, -10000, 100, 1000];
+
+      function isKeyCollision(error) {
+        return /already has an entry/i.test(String((error && error.message) || error));
+      }
+
+      // Keyed slots reject two entries with the same key at the same priority,
+      // and the lowest priority renders. The built-in `assistant-step` sits at
+      // whichever priority the chat UI chose, so probe candidates until one
+      // does not collide.
+      function tryRegister(slots, prio, View) {
+        try {
+          slots.inject("conversation.chat.node", function* () {
+            yield slots.register(
+              {
+                name: "conversation.chat.node",
+                key: "assistant-step",
+                priority: prio,
+              },
+              View,
+            );
+          });
+          return null;
+        } catch (error) {
+          return error;
+        }
+      }
+
       function apply(ctx) {
         console.log("[spike-humanize] client loaded", { mode: mode, priority: priority });
 
@@ -217,9 +248,13 @@
         if (initialEntries.length) console.table(initialEntries);
         else console.warn("[spike-humanize] no slot entries visible yet");
 
+        var used = { priority: null };
+
         window.__humanizeSpike = {
           mode: mode,
-          priority: priority,
+          get priority() {
+            return used.priority;
+          },
           dump: function () {
             var rows = summarize(listEntries(slots));
             console.table(rows);
@@ -249,19 +284,45 @@
         }
 
         var View = mode === "shadow" ? ShadowView : ProbeView;
+        var attempts = [priority].concat(
+          PRIORITY_FALLBACKS.filter(function (p) {
+            return p !== priority;
+          }),
+        );
 
-        slots.inject("conversation.chat.node", function* () {
-          yield slots.register(
-            {
-              name: "conversation.chat.node",
-              key: "assistant-step",
-              priority: priority,
-            },
-            View,
+        for (var i = 0; i < attempts.length; i++) {
+          var error = tryRegister(slots, attempts[i], View);
+          if (error === null) {
+            used.priority = attempts[i];
+            break;
+          }
+          console.warn(
+            "[spike-humanize] priority " + attempts[i] + " rejected: " + String(error.message || error),
           );
-        });
+          if (!isKeyCollision(error)) break;
+        }
 
-        console.log("[spike-humanize] registered " + (mode === "shadow" ? "ShadowView" : "ProbeView"));
+        if (used.priority === null) {
+          console.error("[spike-humanize] no free priority found; probe inactive");
+          return;
+        }
+
+        console.log(
+          "[spike-humanize] registered " + ViewName(mode) + " at priority " + used.priority,
+        );
+
+        // Slot contents are only complete once the chat UI has mounted.
+        if (typeof setTimeout === "function") {
+          setTimeout(function () {
+            var rows = summarize(listEntries(slots));
+            console.log("[spike-humanize] slot entries after mount:");
+            console.table(rows);
+          }, 2000);
+        }
+      }
+
+      function ViewName(mode) {
+        return mode === "shadow" ? "ShadowView" : "ProbeView";
       }
 
       module.exports = { apply: apply, inject: inject, name: name };

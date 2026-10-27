@@ -11,7 +11,7 @@
  */
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -129,11 +129,103 @@ async function testClient(mode) {
 }
 
 async function testHost() {
-  const { apply } = await import(pathToFileURL(join(ROOT, "spike-humanize/lib/host.js")).href + "?smoke=1");
+  const configPath = join(ROOT, "spike-humanize/spike.config.json");
+  const original = readFileSync(configPath, "utf8");
+  const liveConfig = JSON.parse(original);
 
-  const sections = [];
-  const listeners = [];
-  const ctx = {
+  try {
+    // --- scope.mode = off must be inert (fail-closed) -----------------------
+    writeFileSync(
+      configPath,
+      JSON.stringify({ ...liveConfig, scope: { mode: "off", sessions: [] } }, null, 2) + "\n",
+    );
+
+    const off = await loadHost("?smoke=off");
+    const offSections = [];
+    off.apply(fakeHostCtx(offSections, []));
+    const sessionId = "smoke-" + Date.now();
+    const offText = offSections[0].text({ agent: { session: { header: { id: sessionId } } } });
+    assert.equal(offText, "", "scope.mode=off must inject nothing");
+
+    // --- scope.mode = allowlist --------------------------------------------
+    writeFileSync(
+      configPath,
+      JSON.stringify(
+        { ...liveConfig, scope: { mode: "allowlist", sessions: [sessionId] } },
+        null,
+        2,
+      ) + "\n",
+    );
+
+    const { apply } = await loadHost("?smoke=on");
+    const sections = [];
+    const listeners = [];
+    apply(fakeHostCtx(sections, listeners));
+
+    assert.equal(sections.length, 1, "expected one prompt section");
+    assert.equal(sections[0].name, "spike-humanize/segmentation");
+    assert.equal(sections[0].interpolate, false);
+
+    const allowedText = sections[0].text({ agent: { session: { header: { id: sessionId } } } });
+    assert.ok(allowedText.includes("短段落"), "section text missing L2 guidance");
+
+    const deniedText = sections[0].text({ agent: { session: { header: { id: "not-allowed" } } } });
+    assert.equal(deniedText, "", "non-allowlisted session must inject nothing");
+
+    const missingText = sections[0].text({});
+    assert.equal(missingText, "", "missing session id must fail closed");
+
+    assert.equal(listeners.length, 1, "expected one session/event listener");
+    assert.equal(listeners[0].type, "session/event");
+    assert.deepEqual(listeners[0].options, { global: true });
+
+    // capture must ignore sessions outside the allowlist
+    listeners[0].handler(
+      { id: "not-allowed" },
+      {
+        type: "assistant/message",
+        data: { turn: 1, step: 1, message: { content: [{ type: "text", text: "不该被捕获" }] } },
+      },
+    );
+    const file = join(ROOT, "spike-humanize/.spike-output/assistant.jsonl");
+    const before = readFileSync(file, "utf8");
+    assert.ok(!before.includes("不该被捕获"), "capture must be scope-gated");
+
+    listeners[0].handler(
+      { id: sessionId },
+      {
+        type: "assistant/message",
+        data: {
+          turn: 7,
+          step: 3,
+          message: { content: [{ type: "text", text: "第一段。\n\n第二段。" }] },
+        },
+      },
+    );
+
+    const lines = readFileSync(file, "utf8").trim().split("\n");
+    const record = lines
+      .map((line) => JSON.parse(line))
+      .filter((item) => item.sessionId === sessionId)
+      .at(-1);
+
+    assert.ok(record, "capture record not written");
+    assert.equal(record.turn, 7);
+    assert.equal(record.step, 3);
+    assert.equal(record.paragraphs, 2);
+
+    console.log("  host: ok (scope gating + section + capture)");
+  } finally {
+    writeFileSync(configPath, original, "utf8");
+  }
+}
+
+function loadHost(suffix) {
+  return import(pathToFileURL(join(ROOT, "spike-humanize/lib/host.js")).href + suffix);
+}
+
+function fakeHostCtx(sections, listeners) {
+  return {
     logger: { info() {}, warn() {} },
     effect(fn) {
       return fn();
@@ -152,44 +244,6 @@ async function testHost() {
       return undefined;
     },
   };
-
-  apply(ctx);
-
-  assert.equal(sections.length, 1, "expected one prompt section");
-  assert.equal(sections[0].name, "spike-humanize/segmentation");
-  assert.equal(sections[0].interpolate, false);
-  assert.ok(sections[0].text.includes("短段落"), "section text missing L2 guidance");
-
-  assert.equal(listeners.length, 1, "expected one session/event listener");
-  assert.equal(listeners[0].type, "session/event");
-  assert.deepEqual(listeners[0].options, { global: true });
-
-  const sessionId = "smoke-" + Date.now();
-  listeners[0].handler(
-    { id: sessionId },
-    {
-      type: "assistant/message",
-      data: {
-        turn: 7,
-        step: 3,
-        message: { content: [{ type: "text", text: "第一段。\n\n第二段。" }] },
-      },
-    },
-  );
-
-  const file = join(ROOT, "spike-humanize/.spike-output/assistant.jsonl");
-  const lines = readFileSync(file, "utf8").trim().split("\n");
-  const record = lines
-    .map((line) => JSON.parse(line))
-    .filter((item) => item.sessionId === sessionId)
-    .at(-1);
-
-  assert.ok(record, "capture record not written");
-  assert.equal(record.turn, 7);
-  assert.equal(record.step, 3);
-  assert.equal(record.paragraphs, 2);
-
-  console.log("  host: ok (section + capture)");
 }
 
 console.log("[smoke] phase 0 probe");

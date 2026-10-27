@@ -60,14 +60,42 @@ spike-humanize\.spike-output\host-boot.jsonl
 
 ---
 
+## 会话作用域（默认不生效）
+
+探针**默认完全惰性**：不注入提示词、不捕获消息、不遮蔽渲染。正常编程会话不受影响。
+
+宿主侧开关在 `spike-humanize/spike.config.json` 的 `scope`，改完**下一回合即生效，无需重启**（文件 mtime 变更即重载）：
+
+```json
+"scope": { "mode": "off", "sessions": [] }
+```
+
+`mode` 三档：`off` / `allowlist` / `all`。未知值按 `off` 处理（fail-closed）。
+
+用 CLI 操作（会自动帮你列出探针见过的会话 id）：
+
+```powershell
+npm run scope                     # 看当前档位 + 见过的会话
+npm run scope -- add session-xxxx # 加入白名单并切到 allowlist
+npm run scope -- rm  session-xxxx # 移出白名单
+npm run scope -- off              # 全部关闭
+npm run scope -- all              # 全部启用（会影响所有会话，慎用）
+```
+
+会话 id 来源：`.spike-output/sessions.jsonl`（只记 id 与 cwd，不记正文），由宿主在每次组装提示词时写入。
+
+> 这是 FR-12 的探针版。正式插件的设置界面会提供会话列表勾选 + 「只对当前会话启用」快捷开关。
+
+---
+
 ## 三种客户端模式
 
-在 DevTools Console 中切换，然后**刷新窗口**（`Ctrl+R`）：
+客户端渲染**也默认 `off`**。要测 G1 时手动打开，然后**刷新窗口**（`Ctrl+R`）：
 
 ```js
-window.__humanizeSpike.setMode("probe")   // 默认：红框 + JSON 调试卡
+window.__humanizeSpike.setMode("probe")   // 红框 + JSON 调试卡
 window.__humanizeSpike.setMode("shadow")  // 多气泡影子视图（纯文本）
-window.__humanizeSpike.setMode("off")     // 不注册，保留原生渲染
+window.__humanizeSpike.setMode("off")     // 默认：不注册，保留原生渲染
 location.reload()
 ```
 
@@ -77,10 +105,12 @@ location.reload()
 window.__humanizeSpike.dump()
 ```
 
-调整优先级（用于判断 keyed slot 的 priority 方向）：
+> **已实测结论**：keyed slot 同 key **同优先级会抛错**，错误信息为「register at a different priority to shadow it (lowest renders)」。内置 `assistant-step` 在 priority `0`，因此遮蔽必须用**负数**，探针默认 `-100`，并在冲突时自动降级重试（-100 → -1 → -1000 → -10000 → 100 → 1000）。
+
+调整优先级：
 
 ```js
-window.__humanizeSpike.setPriority(100)   // 试 -100 / 0 / 50 / 100 / 1000
+window.__humanizeSpike.setPriority(-200)
 location.reload()
 ```
 
