@@ -205,7 +205,12 @@
       function apply(ctx) {
         console.log("[spike-humanize] client loaded", { mode: mode, priority: priority });
 
-        var slots = ctx.slots;
+        var slots = typeof ctx.get === "function" ? ctx.get("slots") : ctx.slots;
+        if (!slots) {
+          console.warn("[spike-humanize] slots service not available; probe disabled");
+          return;
+        }
+
         var initialEntries = summarize(listEntries(slots));
         if (initialEntries.length) console.table(initialEntries);
         else console.warn("[spike-humanize] no slot entries visible yet");
@@ -243,8 +248,8 @@
 
         var View = mode === "shadow" ? ShadowView : ProbeView;
 
-        ctx.slots.inject("conversation.chat.node", function* () {
-          yield ctx.slots.register(
+        slots.inject("conversation.chat.node", function* () {
+          yield slots.register(
             {
               name: "conversation.chat.node",
               key: "assistant-step",

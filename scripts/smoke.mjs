@@ -93,6 +93,9 @@ async function testClient(mode) {
       inject: slots.api.inject,
       register: slots.api.register,
     }),
+    get(name) {
+      return name === "slots" ? this.slots : undefined;
+    },
   };
 
   module.apply(ctx);
