@@ -40,6 +40,13 @@
       var useEffect = React.useEffect;
       var useRef = React.useRef;
 
+      var primitives = null;
+      try {
+        primitives = require("@deepseek-ai/dsh-client-ui-primitives");
+      } catch (error) {
+        console.warn("[spike-humanize] primitives not reachable: " + String(error && error.message));
+      }
+
       var name = "spike-humanize-client";
       var inject = ["slots"];
 
@@ -145,69 +152,93 @@
         });
       }
 
-      function ShadowView(props) {
+      var PRIORITY_FALLBACKS = [-100, -1, -1000, -10000, 100, 1000];
+
+      // The native assistant renderer registers at priority 0; we shadow it.
+      // Grab its component so we can delegate anything we do not reimplement
+      // (reasoning, tool cards, images, actions).
+      function nativeEntryOf(slots, self) {
+        var entries = listEntries(slots);
+        for (var i = 0; i < entries.length; i++) {
+          var entry = entries[i];
+          if (!entry || !entry.options || entry.options.key !== "assistant-step") continue;
+          var component = entry.component;
+          if (component === self) continue;
+          if (component && component.__spike) continue;
+          return entry;
+        }
+        return null;
+      }
+
+      function BubbleView(props, nativeEntry) {
         var node = props.node;
         var data = (node && node.data) || {};
-        var text = textOf(node);
-        var paragraphs = text
+        var blocks = data.blocks || [];
+        var native = nativeEntry && nativeEntry.component;
+
+        // Anything that is not plain text (reasoning, tool-call, image) belongs
+        // to the native renderer. Splitting it would lose UI we cannot rebuild.
+        var hasNonText = blocks.some(function (block) {
+          return !block || block.kind !== "text";
+        });
+
+        if (hasNonText || !primitives || !primitives.MarkdownText) {
+          if (native) return jsx(native, props);
+          return jsx("pre", {
+            style: { whiteSpace: "pre-wrap", fontFamily: "inherit" },
+            children: textOf(node),
+          });
+        }
+
+        var segments = textOf(node)
           .split(/\r?\n\s*\r?\n/)
           .map(function (part) {
             return part.trim();
           })
           .filter(Boolean);
-        var others = (data.blocks || []).filter(function (block) {
-          return block.kind !== "text";
-        });
 
-        var bubbles = paragraphs.map(function (paragraph, index) {
-          return jsx("div", {
-            key: "p" + index,
-            "data-spike": "bubble",
-            style: {
-              background: "var(--dsh-color-bg-elevated, #f4f4f5)",
-              borderRadius: 14,
-              padding: "8px 12px",
-              maxWidth: 560,
-              whiteSpace: "pre-wrap",
-              lineHeight: 1.65,
-              fontSize: 14,
-            },
-            children: paragraph,
-          });
-        });
-
-        if (others.length > 0) {
-          bubbles.push(
-            jsx("div", {
-              key: "warn",
-              style: { color: "#b45309", fontSize: 12 },
-              children:
-                "⚠ shadow view 隐藏了 " + others.length + " 个非文本 block：" +
-                others
-                  .map(function (block) {
-                    return block.kind;
-                  })
-                  .join(", "),
-            }),
-          );
+        if (segments.length < 2) {
+          if (native) return jsx(native, props);
         }
 
         return jsx("div", {
-          "data-spike": "shadow",
-          style: { display: "flex", flexDirection: "column", gap: 8, padding: "8px 0" },
-          children: bubbles.length
-            ? bubbles
-            : [
-                jsx("div", {
-                  key: "empty",
-                  style: { color: "#6b7280", fontSize: 12 },
-                  children: "(waiting for text…)",
-                }),
-              ],
+          "data-spike": "bubbles",
+          style: { display: "flex", flexDirection: "column", gap: 10, padding: "4px 0" },
+          children: segments.map(function (segment) {
+            return jsx("div", {
+              "data-spike": "bubble",
+              style: {
+                background: "var(--dsw-alias-bg-elevated, rgba(127,127,127,0.08))",
+                borderRadius: 14,
+                padding: "10px 14px",
+                maxWidth: 620,
+                lineHeight: 1.7,
+              },
+              children: jsx(primitives.MarkdownText, { text: segment, streaming: false }),
+            });
+          }),
         });
       }
 
-      var PRIORITY_FALLBACKS = [-100, -1, -1000, -10000, 100, 1000];
+      function PassView(props, nativeEntry) {
+        var native = nativeEntry && nativeEntry.component;
+        if (native) return jsx(native, props);
+        return jsx("pre", {
+          style: { whiteSpace: "pre-wrap", fontFamily: "inherit" },
+          children: textOf(props.node),
+        });
+      }
+
+      function makeView(slots, kind) {
+        function View(props) {
+          var native = nativeEntryOf(slots, View);
+          if (kind === "probe") return ProbeView(props);
+          if (kind === "pass") return PassView(props, native);
+          return BubbleView(props, native);
+        }
+        View.__spike = true;
+        return View;
+      }
 
       function isKeyCollision(error) {
         return /already has an entry/i.test(String((error && error.message) || error));
@@ -355,7 +386,7 @@
         }
 
         function switchMode(next) {
-          if (next !== "off" && next !== "probe" && next !== "shadow") {
+          if (next !== "off" && next !== "probe" && next !== "bubbles" && next !== "pass") {
             console.warn("[spike-humanize] unknown mode " + JSON.stringify(next));
             return mode;
           }
@@ -468,7 +499,7 @@
       }
 
       function registerView(slots, used) {
-        var View = mode === "shadow" ? ShadowView : ProbeView;
+        var View = makeView(slots, mode);
         var attempts = [priority].concat(
           PRIORITY_FALLBACKS.filter(function (p) {
             return p !== priority;
@@ -515,8 +546,11 @@
       }
 
       function ViewName(mode) {
-        return mode === "shadow" ? "ShadowView" : "ProbeView";
+        if (mode === "bubbles") return "BubbleView";
+        if (mode === "pass") return "PassView";
+        return "ProbeView";
       }
+
 
       module.exports = { apply: apply, inject: inject, name: name };
       return module.exports;

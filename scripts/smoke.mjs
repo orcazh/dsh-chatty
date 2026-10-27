@@ -49,6 +49,9 @@ const jsx = (type, props) => ({ type, props });
 const fakeRequire = (id) => {
   if (id === "react") return React;
   if (id === "react/jsx-runtime") return { jsx };
+  if (id === "@deepseek-ai/dsh-client-ui-primitives") {
+    return { MarkdownText: (props) => jsx("span", { "data-md": true, children: props.text }) };
+  }
   throw new Error("unexpected require: " + id);
 };
 
@@ -120,20 +123,33 @@ async function testClient(mode) {
       turn: 1,
       step: 2,
       status: "final",
-      blocks: [
-        { kind: "text", text: "第一段。\n\n第二段。" },
-        { kind: "tool-call" },
-      ],
+      blocks: [{ kind: "text", text: "第一段。\n\n第二段。" }],
     },
   };
   const vnode = entry.component({ node });
   assert.ok(vnode, "view returned nothing");
 
-  const rendered = JSON.stringify(vnode);
-  assert.ok(rendered.includes("第一段"), "view did not render the text");
+  if (mode === "probe") {
+    assert.equal(vnode.props["data-spike"], "probe", "probe mode must render the debug card");
+    assert.ok(JSON.stringify(vnode).includes("第一段"), "probe card must show the text");
+  } else {
+    assert.equal(vnode.props["data-spike"], "bubbles", "pure text must render as bubbles");
+    assert.equal(vnode.props.children.length, 2, "expected two bubbles");
 
-  if (mode === "shadow") {
-    assert.ok(rendered.includes("隐藏了 1 个非文本 block"), "shadow view did not warn about non-text blocks");
+    const rendered = JSON.stringify(vnode);
+    assert.ok(rendered.includes("第一段"), "view did not render the text");
+
+    const firstBubble = vnode.props.children[0];
+    assert.equal(firstBubble.props["data-spike"], "bubble");
+    assert.equal(firstBubble.props.children.props.text, "第一段。");
+    assert.equal(typeof firstBubble.props.children.type, "function", "bubbles must use MarkdownText");
+  }
+
+  // Non-text blocks (tool-call / reasoning / image) must go to the native view.
+  if (mode !== "probe") {
+    const mixed = { data: { status: "final", blocks: [{ kind: "text", text: "工具前" }, { kind: "tool-call" }] } };
+    const mixedVnode = entry.component({ node: mixed });
+    assert.equal(mixedVnode.type, "pre", "mixed content must fall back to native/plain");
   }
 
   // Runtime mode switching must mount/unmount without a page reload.
@@ -270,6 +286,6 @@ function fakeHostCtx(sections, listeners) {
 console.log("[smoke] phase 0 probe");
 await testHost();
 await testClient("probe");
-await testClient("shadow");
+await testClient("bubbles");
 console.log("[smoke] all checks passed");
 process.exit(0);
