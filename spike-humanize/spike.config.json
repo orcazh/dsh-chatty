@@ -12,7 +12,7 @@
     ]
   },
   "reveal": {
-    "gap": 0,
+    "gap": 500,
     "perChar": 0,
     "buffer": true,
     "motion": "auto"
