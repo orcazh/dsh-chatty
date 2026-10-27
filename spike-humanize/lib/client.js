@@ -82,6 +82,15 @@
       var priority = Number(readSetting(PRIORITY_KEY, "-100"));
       if (!Number.isFinite(priority)) priority = 0;
 
+      // `apply()` is where the cordis context lives, but the G7 scoped-register
+      // helpers sit outside it (next to `registerView`). These holders bridge the
+      // two so those helpers can still reach the root context / slot service.
+      var rootCtx = null;
+      var rootSlots = null;
+      var rootUsed = null;
+      var rootMount = null;
+      var rootUnmount = null;
+
       function textOf(node) {
         var blocks = (node && node.data && node.data.blocks) || [];
         return blocks
@@ -634,6 +643,10 @@
         var used = { priority: null };
         var disposers = [];
 
+        rootCtx = ctx;
+        rootSlots = slots;
+        rootUsed = used;
+
         function unmount() {
           disposers.forEach(function (dispose) {
             try {
@@ -651,6 +664,9 @@
           var handle = registerView(slots, used);
           if (handle) disposers.push(handle);
         }
+
+        rootMount = mount;
+        rootUnmount = unmount;
 
         function switchMode(next) {
           if (next !== "off" && next !== "probe" && next !== "bubbles" && next !== "pass") {
@@ -866,7 +882,7 @@
 
       function sessionIds() {
         try {
-          var svc = ctx.get("sessions");
+          var svc = rootCtx && rootCtx.get("sessions");
           var list = svc && svc.list;
           var snap = list && typeof list.get === "function" ? list.get() : list;
           return snap && Array.isArray(snap.ids) ? snap.ids : [];
@@ -882,9 +898,14 @@
       function scopedTest(sessionId) {
         var out = { ts: new Date().toISOString() };
 
+        if (!rootCtx) {
+          out.error = "plugin context not ready yet";
+          return logOut(out);
+        }
+
         var svc = null;
         try {
-          svc = ctx.get("sessions");
+          svc = rootCtx.get("sessions");
         } catch (error) {
           out.sessionsError = errText(error);
         }
@@ -925,23 +946,25 @@
           out.slotsError = errText(error);
         }
         out.slotsFound = !!sessionSlots;
-        out.sameSlotServiceAsRoot = sessionSlots === slots;
+        out.sameSlotServiceAsRoot = sessionSlots === rootSlots;
         if (!sessionSlots) return logOut(out);
 
         scopedOff({ quiet: true });
+        // Also drop the global registration so the test has exactly one source.
+        if (rootUnmount) rootUnmount();
 
         // Force the bubbles view even when the global mode is "off": this probe
         // is about WHERE the registration lands, not about which view it is.
         var previousMode = mode;
         mode = "bubbles";
         try {
-          var handle = registerView(sessionSlots, used);
+          var handle = registerView(sessionSlots, rootUsed);
           if (handle) {
             scoped.dispose = handle;
             scoped.sessionId = id;
             scoped.slotService = sessionSlots;
             out.ok = true;
-            out.priority = used.priority;
+            out.priority = rootUsed.priority;
           } else {
             out.ok = false;
             out.reason = "registerView returned null (no free priority)";
@@ -968,8 +991,10 @@
         scoped.dispose = null;
         scoped.sessionId = null;
         scoped.slotService = null;
-        used.priority = null;
-        if (!options || !options.quiet) mount();
+        if (rootUsed) rootUsed.priority = null;
+        if (!options || !options.quiet) {
+          if (rootMount) rootMount();
+        }
         var out = { hadScoped: had, mode: mode };
         if (!options || !options.quiet) logOut(out);
         return out;
