@@ -421,19 +421,22 @@
       // once the step settles we reveal whole bubbles one at a time.
       var BUFFER_KEY = "humanize.spike.buffer";
       var GAP_KEY = "humanize.spike.gap";
+      var MOTION_KEY = "humanize.spike.motion";
 
       var bufferStreaming = readSetting(BUFFER_KEY, "on") !== "off";
       var bubbleGap = Number(readSetting(GAP_KEY, "450"));
       if (!Number.isFinite(bubbleGap) || bubbleGap < 0) bubbleGap = 450;
+      // auto | on | off — "on" forces the reveal even when the OS asks for
+      // reduced motion ("off" does the opposite).
+      var forceMotion = readSetting(MOTION_KEY, "auto");
 
       var FIRST_BUBBLE_MS = 200;
-      var PER_CHAR_MS = 6;
+      var PER_CHAR_MS = (function () {
+        var value = Number(readSetting("humanize.spike.perchar", "6"));
+        return Number.isFinite(value) && value >= 0 ? value : 6;
+      })();
       var MIN_GAP_MS = 400;
       var MAX_GAP_MS = 1200;
-
-      // Nodes whose cadence already played (turn:step). Module scope on purpose:
-      // scrolling a node out and back in must not replay the whole reveal.
-      var animatedNodes = {};
 
       var TYPING_CSS_ID = "spike-humanize-typing-css";
 
@@ -452,6 +455,8 @@
       }
 
       function prefersReducedMotion() {
+        if (forceMotion === "on") return false;
+        if (forceMotion === "off") return true;
         try {
           return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
         } catch {
@@ -572,45 +577,92 @@
         return { units: units, bubbles: units.filter(function (unit) { return unit.bubble; }) };
       }
 
+      // Reveal bookkeeping. This MUST live at module scope: the chat UI swaps
+      // the streaming projection for the settled one, which mounts a NEW
+      // component instance exactly when the reveal should start. Per-instance
+      // state (`useRef`) is destroyed at that moment, so the first attempt
+      // rendered every bubble at once — it thought the reply was history.
+      var reveals = {};
+      var REVEAL_MEMORY_LIMIT = 400;
+
+      function revealOf(nodeId) {
+        var entry = reveals[nodeId];
+        if (entry) return entry;
+
+        var keys = Object.keys(reveals);
+        if (keys.length >= REVEAL_MEMORY_LIMIT) {
+          for (var i = 0; i < keys.length; i++) {
+            if (reveals[keys[i]].done) delete reveals[keys[i]];
+          }
+        }
+        entry = { streaming: false, shown: 0, done: false };
+        reveals[nodeId] = entry;
+        return entry;
+      }
+
       function renderBubbles(props) {
         logPropsOnce(props);
 
         var data = (props.node && props.node.data) || {};
         var streaming = data.status === "running";
-        var nodeId = String(data.turn) + ":" + String(data.step);
+        // The reveal is keyed by `turn:step`. Without a real id we could not
+        // tell two nodes apart, so such a node is treated as history (never
+        // animated) rather than risk replaying someone else's cadence.
+        var revealable = Number.isFinite(data.turn) && Number.isFinite(data.step);
+        var nodeId = revealable ? String(data.turn) + ":" + String(data.step) : null;
 
-        var stateRef = useRef(null);
         var bump = useState(0)[1];
-
-        if (!stateRef.current || stateRef.current.id !== nodeId) {
-          stateRef.current = { id: nodeId, sawStreaming: streaming, shown: 0, done: false };
-        }
-        var state = stateRef.current;
-        if (streaming) state.sawStreaming = true;
+        var entry = revealable ? revealOf(nodeId) : { streaming: false, shown: 0, done: true };
+        if (revealable && streaming) entry.streaming = true;
 
         var built = buildUnits(props, streaming);
         var total = built.bubbles.length;
 
-        // Reveal only for replies that were actually watched growing. History,
-        // already-animated nodes and reduced-motion users get everything at once.
-        var shouldAnimate =
-          state.sawStreaming && !state.done && !animatedNodes[nodeId] && !prefersReducedMotion();
-        var shown = shouldAnimate ? Math.min(state.shown, total) : total;
+        // Reveal only for replies we actually watched being generated. History,
+        // finished reveals and reduced-motion users get everything at once.
+        // While buffering, the answer stays hidden no matter what.
+        var buffered = streaming && bufferStreaming;
+        var shouldAnimate = !streaming && entry.streaming && !entry.done && !prefersReducedMotion();
+        var shown = buffered ? 0 : shouldAnimate ? Math.min(entry.shown, total) : total;
 
         useEffect(
           function () {
             if (streaming) return undefined;
-            if (!state.sawStreaming || state.done || animatedNodes[nodeId]) return undefined;
-            if (prefersReducedMotion()) return undefined;
-            if (state.shown >= total) {
-              state.done = true;
-              animatedNodes[nodeId] = true;
+            if (!entry.streaming || entry.done) return undefined;
+            if (prefersReducedMotion()) {
+              if (!entry.motionLogged) {
+                entry.motionLogged = true;
+                console.log(
+                  "[spike-humanize] reveal skipped for " + nodeId + ": prefers-reduced-motion",
+                );
+              }
+              entry.done = true;
               return undefined;
             }
-            var wait =
-              state.shown === 0 ? FIRST_BUBBLE_MS : gapAfter(built.bubbles[state.shown - 1].weight);
+            if (entry.shown >= total) {
+              entry.done = true;
+              return undefined;
+            }
+            if (!entry.logged) {
+              entry.logged = true;
+              console.log(
+                "[spike-humanize] reveal start " +
+                  nodeId +
+                  " bubbles=" +
+                  total +
+                  " gap=" +
+                  bubbleGap +
+                  "ms/+" +
+                  PER_CHAR_MS +
+                  "ms per char",
+              );
+            }
+            // Pace by the bubble that is ABOUT to appear: a long message takes
+            // longer to "type". Milliseconds per character, plus a base pause.
+            var next = built.bubbles[entry.shown];
+            var wait = entry.shown === 0 ? FIRST_BUBBLE_MS : gapAfter(next ? next.weight : 0);
             var timer = setTimeout(function () {
-              state.shown += 1;
+              entry.shown += 1;
               bump(function (count) {
                 return count + 1;
               });
@@ -619,7 +671,7 @@
               clearTimeout(timer);
             };
           },
-          [streaming, total, state.shown, nodeId],
+          [streaming, total, entry.shown, nodeId],
         );
 
         var children = [];
@@ -925,11 +977,56 @@
             console.log("[spike-humanize] bubbleGap -> " + bubbleGap);
             return bubbleGap;
           },
+          // FR-1: extra delay per character of the bubble about to appear.
+          perChar: function (ms) {
+            var next = Number(ms);
+            if (Number.isFinite(next) && next >= 0) {
+              PER_CHAR_MS = next;
+              window.localStorage.setItem("humanize.spike.perchar", String(next));
+            }
+            console.log("[spike-humanize] PER_CHAR_MS -> " + PER_CHAR_MS);
+            return PER_CHAR_MS;
+          },
+          // FR-1: force the reveal on/off regardless of the OS motion setting.
+          motion: function (next) {
+            var value = next === "on" || next === "off" ? next : "auto";
+            forceMotion = value;
+            window.localStorage.setItem(MOTION_KEY, value);
+            console.log("[spike-humanize] motion -> " + value);
+            return value;
+          },
+          // FR-1: one-call diagnostic for "why did everything appear at once".
+          diag: function () {
+            var out = {
+              mode: mode,
+              bufferStreaming: bufferStreaming,
+              bubbleGap: bubbleGap,
+              perCharMs: PER_CHAR_MS,
+              motion: forceMotion,
+              reducedMotion: prefersReducedMotion(),
+              scoped: scoped.sessionId,
+              scopedActive: !!scoped.dispose,
+              reveals: {},
+            };
+            Object.keys(reveals).forEach(function (id) {
+              out.reveals[id] = reveals[id];
+            });
+            return logOut(out);
+          },
           // FR-1: forget which replies already played, so the next render of an
           // old reply animates again (useful when tuning the cadence).
           resetReveal: function () {
-            animatedNodes = {};
+            reveals = {};
             console.log("[spike-humanize] reveal memory cleared");
+          },
+          // FR-1: what the reveal machinery currently believes.
+          reveals: function () {
+            var out = {};
+            Object.keys(reveals).forEach(function (id) {
+              out[id] = reveals[id];
+            });
+            console.log("[spike-humanize] reveals " + safeJson(out));
+            return out;
           },
           // G7: register the bubbles view into ONE session's slot scope.
           scopedTest: scopedTest,

@@ -252,6 +252,22 @@ async function testClient(mode) {
     assert.equal(responseHalf.props.children.length, 1, "response half must drop the reasoning");
     assert.equal(responseHalf.props.children[0].props["data-spike"], "bubble");
 
+    // FR-1: a reply that was watched streaming must NOT dump every bubble on
+    // the settle render — it starts hidden and steps forward.
+    const revealBlocks = [{ kind: "text", text: "第一段。\n\n第二段。\n\n第三段。" }];
+    entry.component({ node: { data: { status: "running", turn: 91, step: 1, blocks: revealBlocks } } });
+    const settle = entry.component({
+      node: { data: { status: "final", turn: 91, step: 1, blocks: revealBlocks } },
+    });
+    assert.equal(settle.props.children.length, 1, "settle must start with zero bubbles + dots");
+    assert.equal(settle.props.children[0].props["data-spike"], "typing");
+
+    // Same reply seen only after the fact (history) shows everything at once.
+    const history = entry.component({
+      node: { data: { status: "final", turn: 92, step: 1, blocks: revealBlocks } },
+    });
+    assert.equal(history.props.children.length, 3, "history must render every bubble immediately");
+
     // A fenced code block may contain blank lines; it must never be cut up.
     const withCode = entry.component({
       node: {
