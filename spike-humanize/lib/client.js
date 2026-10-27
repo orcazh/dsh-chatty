@@ -263,6 +263,40 @@
           out.prototypeMethods = null;
         }
 
+        // Anything that smells like "which session is on screen right now".
+        try {
+          var names = new Set();
+          Object.keys(svc).forEach(function (key) {
+            names.add(key);
+          });
+          if (svc.constructor) {
+            Object.getOwnPropertyNames(svc.constructor.prototype).forEach(function (key) {
+              names.add(key);
+            });
+          }
+          var candidates = {};
+          names.forEach(function (key) {
+            if (!/current|active|selected|focused|opened|viewing|visible/i.test(key)) return;
+            var value = svc[key];
+            candidates[key] =
+              typeof value === "function"
+                ? "[function " + (value.name || "anonymous") + "]"
+                : value === null || typeof value !== "object"
+                  ? value
+                  : "[object " + (value.constructor ? value.constructor.name : "?") + "]";
+          });
+          out.candidates = candidates;
+        } catch (error) {
+          out.candidates = String((error && error.message) || error);
+        }
+
+        try {
+          out.location = window.location.href;
+          out.title = document.title;
+        } catch {
+          // ignore
+        }
+
         return out;
       }
 
@@ -306,7 +340,7 @@
           },
           sessions: function () {
             var result = probeSessions(ctx);
-            console.log("[spike-humanize] sessions probe", result);
+            console.log("[spike-humanize] sessions probe " + safeJson(result));
             return result;
           },
           dump: function () {
@@ -343,6 +377,22 @@
         autoProbeSessions(ctx, [3000, 10000]);
       }
 
+      function safeJson(value) {
+        var seen = [];
+        try {
+          return JSON.stringify(value, function (key, val) {
+            if (typeof val === "function") return "[function " + (val.name || "anonymous") + "]";
+            if (val && typeof val === "object") {
+              if (seen.indexOf(val) !== -1) return "[circular]";
+              seen.push(val);
+            }
+            return val;
+          });
+        } catch (error) {
+          return '"[unserializable: ' + String((error && error.message) || error) + ']"';
+        }
+      }
+
       function autoProbeSessions(ctx, delays) {
         if (typeof setTimeout !== "function") return;
         delays.forEach(function (delay) {
@@ -352,7 +402,7 @@
               console.log("[spike-humanize] sessions probe @" + delay + "ms: service not available yet");
               return;
             }
-            console.log("[spike-humanize] sessions probe @" + delay + "ms", result);
+            console.log("[spike-humanize] sessions probe @" + delay + "ms " + safeJson(result));
           }, delay);
         });
       }
