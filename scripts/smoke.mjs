@@ -48,6 +48,14 @@ const jsx = (type, props) => ({ type, props });
 
 let failPrimitivesOnce = false;
 
+// Mirrors reality: the real `MarkdownText` is `React.memo(...)`, so it is an
+// OBJECT with $$typeof, not a function. A `typeof === "function"` check would
+// silently reject it and render plain text.
+const MarkdownText = {
+  $$typeof: Symbol.for("react.memo"),
+  type: (props) => jsx("span", { "data-md": true, children: props.text }),
+};
+
 const fakeRequire = (id) => {
   if (id === "react") return React;
   if (id === "react/jsx-runtime") return { jsx };
@@ -56,7 +64,7 @@ const fakeRequire = (id) => {
       failPrimitivesOnce = false;
       throw new Error("primitives not registered yet");
     }
-    return { MarkdownText: (props) => jsx("span", { "data-md": true, children: props.text }) };
+    return { MarkdownText };
   }
   throw new Error("unexpected require: " + id);
 };
@@ -136,8 +144,8 @@ async function testClient(mode) {
       node: { data: { status: "final", blocks: [{ kind: "text", text: "再试一次" }] } },
     });
     assert.equal(
-      typeof retried.props.children[0].props.children.type,
-      "function",
+      retried.props.children[0].props.children.type,
+      MarkdownText,
       "primitives must be retried, not cached as missing",
     );
   }
@@ -166,7 +174,7 @@ async function testClient(mode) {
     const firstBubble = vnode.props.children[0];
     assert.equal(firstBubble.props["data-spike"], "bubble");
     assert.equal(firstBubble.props.children.props.text, "第一段。");
-    assert.equal(typeof firstBubble.props.children.type, "function", "bubbles must use MarkdownText");
+    assert.equal(firstBubble.props.children.type, MarkdownText, "bubbles must use MarkdownText");
   }
 
   if (mode === "bubbles") {

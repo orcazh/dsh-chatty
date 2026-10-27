@@ -50,9 +50,14 @@
         if (primitives) return primitives;
         try {
           var loaded = require("@deepseek-ai/dsh-client-ui-primitives");
-          if (loaded && typeof loaded.MarkdownText === "function") {
+          // `MarkdownText` is `React.memo(...)`, i.e. an OBJECT with $$typeof,
+          // not a function. Testing for "function" rejects it and silently
+          // drops every reply to plain text.
+          if (loaded && loaded.MarkdownText) {
             primitives = loaded;
-            console.log("[spike-humanize] primitives resolved lazily");
+            console.log(
+              "[spike-humanize] primitives resolved (MarkdownText is " + typeof loaded.MarkdownText + ")",
+            );
             return primitives;
           }
           if (!primitivesWarned) {
@@ -284,6 +289,15 @@
         console.log("[spike-humanize] view props keys: " + keys.join(", "));
         console.log("[spike-humanize] view props probes " + safeJson(probe));
         console.log("[spike-humanize] groupPart=" + String((props || {}).groupPart));
+        // FR-12: if the node knows its session, per-session gating is feasible
+        // on the client without the host fingerprint pipeline.
+        var sid = (props || {}).sessionId;
+        console.log(
+          "[spike-humanize] sessionId=" +
+            String(typeof sid) +
+            " " +
+            String(typeof sid === "string" ? sid : sid && sid.id ? sid.id : JSON.stringify(sid)).slice(0, 64),
+        );
       }
 
       function markdownOr(text, streaming) {

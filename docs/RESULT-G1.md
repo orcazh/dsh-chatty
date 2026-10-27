@@ -135,6 +135,10 @@ jsx(primitives.MarkdownText, {
    `apply()` 执行时 `@deepseek-ai/dsh-client-ui-primitives` 可能还没进 loader，
    一次性 `require` 失败后若缓存了 `null`，会**永久**退化成纯文本（Markdown 不渲染）。
    必须在渲染时惰性解析并在下一次渲染重试。
+5. **`MarkdownText` 是 `React.memo(...)` 的产物，`typeof` 是 `"object"` 不是 `"function"`。**
+   用 `typeof x === "function"` 判断组件是否可用会**永远为假**，静默退回纯文本
+   （Markdown 星号原样显示）。判据必须是真值判断，或检查 `$$typeof`。
+   冒烟测试里的假 `MarkdownText` 已按真实形态改成 memo 对象，防止回归。
 5. **按空行分段必须跳过代码围栏（``` / ~~~）。**
    否则代码块内部空行会被当成段落边界，代码块被切成两个气泡。
    `splitParagraphs` 现在做围栏状态机：围栏内的空行不切分，且闭合围栏必须同行同字符、长度不短于开启围栏、且无 info string。
