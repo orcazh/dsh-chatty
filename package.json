@@ -1,0 +1,13 @@
+{
+  "name": "dsh-humanize",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Phase 0 spikes for the DSH Desktop humanized chat plugin",
+  "scripts": {
+    "check": "node --check spike-humanize/lib/host.js && node --check spike-humanize/lib/client.js",
+    "smoke": "node scripts/smoke.mjs",
+    "install:spike": "node scripts/install-spike.mjs",
+    "uninstall:spike": "node scripts/uninstall-spike.mjs"
+  }
+}
