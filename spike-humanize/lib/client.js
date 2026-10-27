@@ -41,10 +41,33 @@
       var useRef = React.useRef;
 
       var primitives = null;
-      try {
-        primitives = require("@deepseek-ai/dsh-client-ui-primitives");
-      } catch (error) {
-        console.warn("[spike-humanize] primitives not reachable: " + String(error && error.message));
+      var primitivesWarned = false;
+
+      // Resolve lazily and keep retrying: `apply()` can run before the
+      // primitives module is registered in the loader, and a one-shot require
+      // at boot would silently poison us into the plain-text fallback forever.
+      function primitivesOf() {
+        if (primitives) return primitives;
+        try {
+          var loaded = require("@deepseek-ai/dsh-client-ui-primitives");
+          if (loaded && typeof loaded.MarkdownText === "function") {
+            primitives = loaded;
+            console.log("[spike-humanize] primitives resolved lazily");
+            return primitives;
+          }
+          if (!primitivesWarned) {
+            primitivesWarned = true;
+            console.warn("[spike-humanize] primitives loaded but MarkdownText is missing");
+          }
+        } catch (error) {
+          if (!primitivesWarned) {
+            primitivesWarned = true;
+            console.warn(
+              "[spike-humanize] primitives not reachable yet: " + String((error && error.message) || error),
+            );
+          }
+        }
+        return null;
       }
 
       var name = "spike-humanize-client";
@@ -173,15 +196,50 @@
       //   reasoning -> ProcessReasoning fold    (rebuilt as <details>)
       //   image     -> renderSlot(child)        (child slot declared below)
       //   tool-call -> nothing at all           (skipped, same as native)
-      var SPLIT_RE = /\r?\n\s*\r?\n/;
-
+      // Split on blank lines, but never inside a fenced code block: a fence may
+      // contain blank lines and cutting it would destroy the snippet.
       function splitParagraphs(text) {
-        return String(text === null || text === undefined ? "" : text)
-          .split(SPLIT_RE)
-          .map(function (part) {
-            return part.trim();
-          })
-          .filter(Boolean);
+        var source = String(text === null || text === undefined ? "" : text).replace(/\r\n/g, "\n");
+        var lines = source.split("\n");
+        var parts = [];
+        var current = [];
+        var fence = null;
+        var FENCE = /^ {0,3}(`{3,}|~{3,})(.*)$/;
+
+        function flush() {
+          var joined = current.join("\n").trim();
+          if (joined) parts.push(joined);
+          current = [];
+        }
+
+        for (var i = 0; i < lines.length; i++) {
+          var line = lines[i];
+          var match = FENCE.exec(line);
+
+          if (fence !== null) {
+            current.push(line);
+            if (match && match[1].charAt(0) === fence.charAt(0) && match[1].length >= fence.length && !match[2].trim()) {
+              fence = null;
+            }
+            continue;
+          }
+
+          if (match) {
+            fence = match[1];
+            current.push(line);
+            continue;
+          }
+
+          if (!line.trim()) {
+            flush();
+            continue;
+          }
+
+          current.push(line);
+        }
+
+        flush();
+        return parts;
       }
 
       // A node can be rendered twice: `groupPart: "reasoning"` for the process
@@ -229,10 +287,11 @@
       }
 
       function markdownOr(text, streaming) {
-        if (!primitives || typeof primitives.MarkdownText !== "function") {
+        var prims = primitivesOf();
+        if (!prims) {
           return jsx("span", { style: { whiteSpace: "pre-wrap" }, children: text });
         }
-        return jsx(primitives.MarkdownText, { text: text, streaming: streaming === true });
+        return jsx(prims.MarkdownText, { text: text, streaming: streaming === true });
       }
 
       function reasoningNode(block, key, streaming) {

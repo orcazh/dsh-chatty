@@ -46,10 +46,16 @@ const React = {
 
 const jsx = (type, props) => ({ type, props });
 
+let failPrimitivesOnce = false;
+
 const fakeRequire = (id) => {
   if (id === "react") return React;
   if (id === "react/jsx-runtime") return { jsx };
   if (id === "@deepseek-ai/dsh-client-ui-primitives") {
+    if (failPrimitivesOnce) {
+      failPrimitivesOnce = false;
+      throw new Error("primitives not registered yet");
+    }
     return { MarkdownText: (props) => jsx("span", { "data-md": true, children: props.text }) };
   }
   throw new Error("unexpected require: " + id);
@@ -117,6 +123,24 @@ async function testClient(mode) {
   const entry = slots.entries[0];
   assert.equal(entry.options.key, "assistant-step");
   assert.equal(entry.options.name, "conversation.chat.node");
+
+  if (mode === "bubbles") {
+    // Primitive resolution must retry: at boot the module may not be
+    // registered yet, and a stuck fallback renders plain text forever.
+    failPrimitivesOnce = true;
+    const early = entry.component({
+      node: { data: { status: "final", blocks: [{ kind: "text", text: "先失败一次" }] } },
+    });
+    assert.equal(early.props.children[0].props.children.type, "span", "missing primitives must degrade to text");
+    const retried = entry.component({
+      node: { data: { status: "final", blocks: [{ kind: "text", text: "再试一次" }] } },
+    });
+    assert.equal(
+      typeof retried.props.children[0].props.children.type,
+      "function",
+      "primitives must be retried, not cached as missing",
+    );
+  }
 
   const node = {
     data: {
@@ -203,6 +227,27 @@ async function testClient(mode) {
     });
     assert.equal(responseHalf.props.children.length, 1, "response half must drop the reasoning");
     assert.equal(responseHalf.props.children[0].props["data-spike"], "bubble");
+
+    // A fenced code block may contain blank lines; it must never be cut up.
+    const withCode = entry.component({
+      node: {
+        data: {
+          status: "final",
+          blocks: [
+            {
+              kind: "text",
+              text: "看这段代码：\n\n```js\nconst a = 1;\n\nconst b = 2;\n```\n\n就这些。",
+            },
+          ],
+        },
+      },
+    });
+    const codeBubbles = withCode.props.children;
+    assert.equal(codeBubbles.length, 3, "expected intro + whole code block + outro");
+    const codeText = codeBubbles[1].props.children.props.text;
+    assert.ok(codeText.startsWith("```js"), "opening fence must stay in the same bubble");
+    assert.ok(codeText.includes("const a = 1;") && codeText.includes("const b = 2;"), "code must not be split");
+    assert.ok(codeText.trim().endsWith("```"), "closing fence must stay in the same bubble");
   }
 
   // Runtime mode switching must mount/unmount without a page reload.

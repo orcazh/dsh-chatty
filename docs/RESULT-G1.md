@@ -131,6 +131,13 @@ jsx(primitives.MarkdownText, {
 2. **气泡底色不能用 `--dsw-alias-bg-layer-1` / `--dsh-color-bg-elevated`。**
    前者等于页面底色，后者不存在。用 `color-mix` 混 `--dsw-alias-label-primary`。
 3. **`AssistantNodeView` 的 props 无法从插件侧伪造**，不要试图「借」原生组件。
+4. **`require` 共享 UI 包必须延迟 + 重试。**
+   `apply()` 执行时 `@deepseek-ai/dsh-client-ui-primitives` 可能还没进 loader，
+   一次性 `require` 失败后若缓存了 `null`，会**永久**退化成纯文本（Markdown 不渲染）。
+   必须在渲染时惰性解析并在下一次渲染重试。
+5. **按空行分段必须跳过代码围栏（``` / ~~~）。**
+   否则代码块内部空行会被当成段落边界，代码块被切成两个气泡。
+   `splitParagraphs` 现在做围栏状态机：围栏内的空行不切分，且闭合围栏必须同行同字符、长度不短于开启围栏、且无 info string。
 
 ---
 
