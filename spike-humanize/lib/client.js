@@ -447,7 +447,14 @@
         return Number.isFinite(value) && value >= 0 ? value : 6;
       })();
       var MIN_GAP_MS = 400;
-      var MAX_GAP_MS = 1200;
+      // Ceiling for one bubble's wait. It must be well above the largest value
+      // the sliders can produce, otherwise "drag both to max" silently does
+      // nothing (the old 1200ms cap ate every setting above it).
+      var MAX_GAP_MS = 6000;
+      // Slider ranges. Keep these in step with the host's `sanitizeConfig`
+      // clamps, or the saved value and the shown value drift apart.
+      var SLIDER_GAP_MAX = 3000;
+      var SLIDER_PERCHAR_MAX = 60;
 
       /** Applies the host's `reveal` block to the live tunables. */
       function applyRevealSettings(reveal) {
@@ -530,9 +537,14 @@
       }
 
       /** Gap before revealing the bubble AFTER one of `length` characters. */
-      function gapAfter(length) {
-        var wait = bubbleGap + length * PER_CHAR_MS;
+      function gapFor(gap, perChar, length) {
+        var wait = Number(gap) + Number(length) * Number(perChar);
+        if (!Number.isFinite(wait)) return MIN_GAP_MS;
         return Math.max(MIN_GAP_MS, Math.min(MAX_GAP_MS, wait));
+      }
+
+      function gapAfter(length) {
+        return gapFor(bubbleGap, PER_CHAR_MS, length);
       }
 
       /**
@@ -1392,6 +1404,11 @@
           var row = byId[id];
           if (!row) return;
           if (row.parentId || row.parentSessionId || row.origin === "subagent") return;
+          // `blank` = no turns yet. DSH pre-creates one of these per workspace
+          // as the "new chat" placeholder; with no title its displayTitle falls
+          // back to the folder name, so it shows up looking like a workspace
+          // ("default workspace") rather than a conversation.
+          if (row.blank === true) return;
           var title = row.displayTitle || row.title || row.name || null;
           rows.push({
             id: id,
@@ -1985,7 +2002,7 @@
               h("input", {
                 type: "range",
                 min: "0",
-                max: "1500",
+                max: String(SLIDER_GAP_MAX),
                 step: "50",
                 value: draft.gap,
                 onChange: function (event) {
@@ -2001,7 +2018,7 @@
               h("input", {
                 type: "range",
                 min: "0",
-                max: "30",
+                max: String(SLIDER_PERCHAR_MAX),
                 step: "1",
                 value: draft.perChar,
                 onChange: function (event) {
@@ -2013,9 +2030,12 @@
             h(
               "div",
               { "data-hz-dim": "1" },
-              "下一条要等：固定停顿 + 它自己的字数 × 每多一个字（最短 400ms、最长 1200ms）。" +
-                "按当前设置，一条 60 字的消息大约等 " +
-                String(Math.min(1200, Math.max(400, Number(draft.gap) + Number(draft.perChar) * 60))) +
+              "下一条要等：固定停顿 + 它自己的字数 × 每多一个字（最短 " +
+                MIN_GAP_MS +
+                "ms、最长 " +
+                MAX_GAP_MS +
+                "ms）。按当前设置，一条 60 字的消息大约等 " +
+                String(gapFor(draft.gap, draft.perChar, 60)) +
                 "ms。",
             ),
           ),

@@ -115,6 +115,9 @@ byId[id] = {
 ```
 
 - 过滤 `parentId` / `origin === "subagent"` —— 子代理不是给人勾的会话
+- 过滤 `blank === true` —— 每个工作区 DSH 会预建一个「新聊天」占位会话，
+  它没有回合也没有标题，`displayTitle` 就退回目录名，于是看起来像多出来一个
+  工作区（用户报的「多了一个 default workspace」就是这个）
 - 标题直接用 `displayTitle`（`title` 可能没有，`displayTitle` 一定有）
 - 「· 当前」用 `retainedBy.mainView > 0` 判定（和 `ui-session` 的 `isMain()` 一致），
   不再依赖「我们的视图渲染过才记得住」

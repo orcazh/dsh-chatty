@@ -285,7 +285,7 @@ function sanitizeConfig(input) {
     },
     reveal: {
       gap: numberIn(reveal.gap, DEFAULT_CONFIG.reveal.gap, 0, 3000),
-      perChar: numberIn(reveal.perChar, DEFAULT_CONFIG.reveal.perChar, 0, 50),
+      perChar: numberIn(reveal.perChar, DEFAULT_CONFIG.reveal.perChar, 0, 60),
       buffer: reveal.buffer !== false,
       motion: MOTION_MODES.includes(reveal.motion) ? reveal.motion : "auto",
     },

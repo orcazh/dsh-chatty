@@ -164,6 +164,16 @@ async function testClient(mode) {
             origin: "subagent",
             retainedBy: { mainView: 0 },
           },
+          // DSH pre-creates one of these per workspace: no turns, no title, so
+          // its displayTitle falls back to the folder name and it reads like a
+          // workspace ("default workspace") rather than a conversation.
+          "session-blank": {
+            id: "session-blank",
+            displayTitle: "default workspace",
+            blank: true,
+            updatedAt: 400,
+            retainedBy: { mainView: 0 },
+          },
         },
       }),
     },
@@ -241,6 +251,11 @@ async function testClient(mode) {
   );
   assert.ok(loadedJson.includes("700ms") && loadedJson.includes("9ms"), "sliders must show the live values");
   assert.ok(loadedJson.includes("保存"), "the save button must be present");
+  // The sliders must go high enough to be useful, and the preview must show the
+  // real ceiling: a 1200ms cap used to swallow every setting above it.
+  assert.ok(loadedJson.includes('"max":"3000"'), "the fixed-pause slider must reach 3000ms");
+  assert.ok(loadedJson.includes('"max":"60"'), "the per-character slider must reach 60ms");
+  assert.ok(loadedJson.includes("最长 6000ms"), "the preview must state the real ceiling");
 
   // The live client catalog wins over the host list: it is what the sidebar
   // shows, it has real titles, and subagent children must not be offered.
@@ -270,6 +285,10 @@ async function testClient(mode) {
   assert.ok(liveJson.includes("连接我的微信"), "titles must come from the live catalog");
   assert.ok(liveJson.includes("QQ 聊天"), "every real session must be listed");
   assert.ok(!liveJson.includes("子代理任务"), "subagent children must be filtered out");
+  assert.ok(
+    !liveJson.includes("default workspace"),
+    "blank sessions (DSH's per-workspace new-chat placeholder) must be filtered out",
+  );
   assert.ok(!liveJson.includes("session-gone"), "the host fallback must not be used when live data exists");
   assert.ok(liveJson.includes("· 当前"), "the session DSH is showing must be marked as current");
 
