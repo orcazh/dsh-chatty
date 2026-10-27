@@ -17,6 +17,7 @@ const PKG_DIR = dirname(dirname(fileURLToPath(import.meta.url)));
 const CONFIG_FILE = join(PKG_DIR, "spike.config.json");
 const OUTPUT_DIR = join(PKG_DIR, ".spike-output");
 const OUTPUT_FILE = join(OUTPUT_DIR, "assistant.jsonl");
+const BOOT_FILE = join(OUTPUT_DIR, "host-boot.jsonl");
 
 const DEFAULT_CONFIG = {
   promptSection: true,
@@ -57,6 +58,18 @@ export function apply(ctx) {
     outputFile: OUTPUT_FILE,
     config,
   });
+
+  // Liveness proof that does not depend on the main-process log being visible.
+  appendRecord(
+    {
+      ts: new Date().toISOString(),
+      event: "host-boot",
+      pid: process.pid,
+      dsh: process.versions?.electron ? "electron" : "node",
+      config,
+    },
+    BOOT_FILE,
+  );
 
   // --- G3 helper: which services are reachable from the host half? ---------
   const services = ["connection", "agent", "sessionController", "tools", "systemPrompt", "remote"];
@@ -138,10 +151,10 @@ function loadConfig() {
   }
 }
 
-function appendRecord(record) {
+function appendRecord(record, file = OUTPUT_FILE) {
   try {
     mkdirSync(OUTPUT_DIR, { recursive: true });
-    appendFileSync(OUTPUT_FILE, JSON.stringify(record) + "\n", "utf8");
+    appendFileSync(file, JSON.stringify(record) + "\n", "utf8");
   } catch (error) {
     console.warn("[spike-humanize] capture failed:", error);
   }

@@ -37,6 +37,7 @@ Phase 0 探针工程。目标不是做出插件，而是回答三个问题：
 ```powershell
 cd "C:\Users\Orca\Desktop\DSH humanizer"
 npm run check
+npm run verify        # 结构自检：bundle / patch / exports / 模块解析
 npm run install:spike
 ```
 
@@ -45,11 +46,17 @@ npm run install:spike
 启动后打开 DevTools（Electron：`Ctrl+Shift+I`），Console 里应能看到：
 
 ```
+[spike-humanize] client script evaluated
 [spike-humanize] client loaded { mode: "probe", priority: 0 }
-[spike-humanize] host loaded { ... }
 ```
 
-如果看不到，先检查插件是否出现在插件管理页，再看主进程日志。
+宿主半边即使日志不可见，也会写一条启动记录：
+
+```
+spike-humanize\.spike-output\host-boot.jsonl
+```
+
+`npm run verify` 全绿但重启后仍无反应 → 说明问题在 DSH 的 bundle 扫描/挂载阶段，不是包清单问题。
 
 ---
 

@@ -14,6 +14,8 @@
 (function () {
   "use strict";
 
+  console.log("[spike-humanize] client script evaluated");
+
   var MODE_KEY = "humanize.spike.mode";
   var PRIORITY_KEY = "humanize.spike.priority";
 
