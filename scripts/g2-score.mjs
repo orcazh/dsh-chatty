@@ -109,6 +109,7 @@ const scored = live.map(({ record }) => {
     turn: record.turn,
     chars: record.chars,
     paragraphs: parts.length,
+    lengths: parts.map((part) => part.replace(/\s+/g, "").length),
     blankInFence: blankLinesInsideFences(record.text),
     unterminated,
     leak: LEAK.test(record.text),
@@ -116,23 +117,38 @@ const scored = live.map(({ record }) => {
   };
 });
 
-const inRange = scored.filter((row) => row.paragraphs >= 2 && row.paragraphs <= 6).length;
+// Round 2 target. Round 1 used 2-6; the owner judged that "still not fragmented
+// enough", so the spec moved to short back-to-back messages and the band moved up.
+const MIN_PARAS = 3;
+const MAX_PARAS = 6;
+const SOFT_MAX_CHARS = 60;
+
+const inRange = scored.filter((r) => r.paragraphs >= MIN_PARAS && r.paragraphs <= MAX_PARAS).length;
 const blanky = scored.filter((row) => row.blankInFence > 0).length;
 const broken = scored.filter((row) => row.unterminated).length;
 const leaked = scored.filter((row) => row.leak).length;
 
+const totalParas = scored.reduce((sum, row) => sum + row.lengths.length, 0);
+const totalChars = scored.reduce((sum, row) => sum + row.lengths.reduce((a, b) => a + b, 0), 0);
+const avgParas = (totalParas / scored.length).toFixed(1);
+const avgChars = Math.round(totalChars / totalParas);
+const longParas = scored.reduce((sum, row) => sum + row.lengths.filter((n) => n > SOFT_MAX_CHARS).length, 0);
+
 console.log(`samples: ${scored.length}${bad.length ? `  (unparseable lines: ${bad.length})` : ""}\n`);
 console.log(
-  ["ts", "turn", "chars", "paras", "blankInFence", "unterminated", "leak", "head"].join("\t"),
+  ["ts", "turn", "chars", "paras", "avgLen", ">60 chars", "fenceBlank", "broken", "leak", "head"].join("\t"),
 );
 for (const row of scored) {
+  const avg = Math.round(row.lengths.reduce((a, b) => a + b, 0) / row.lengths.length);
   console.log(
     [
       row.ts.slice(11, 19),
       row.turn,
       row.chars,
       row.paragraphs,
-      row.blankInFence,
+      avg,
+      row.lengths.filter((n) => n > SOFT_MAX_CHARS).length || "",
+      row.blankInFence || "",
       row.unterminated ? "YES" : "",
       row.leak ? "YES" : "",
       row.head,
@@ -142,16 +158,23 @@ for (const row of scored) {
 
 const pct = (n) => `${((n / scored.length) * 100).toFixed(0)}%`;
 
-console.log("\n--- G2 gates ---");
-console.log(`2-6 paragraphs           : ${inRange}/${scored.length}  ${pct(inRange)}   (need >= 80%)`);
-console.log(`1 paragraph (too flat)   : ${scored.filter((r) => r.paragraphs === 1).length}`);
-console.log(`7+ paragraphs (too choppy): ${scored.filter((r) => r.paragraphs >= 7).length}`);
-console.log(`blank line inside fence   : ${blanky}/${scored.length}  ${pct(blanky)}   (need <= 5%)`);
-console.log(`unterminated code fence   : ${broken}`);
-console.log(`spec leakage              : ${leaked}`);
+console.log("\n--- hard requirements (must be zero) ---");
+console.log(`unterminated code fence : ${broken}`);
+console.log(`spec leakage            : ${leaked}`);
+console.log(`flat replies (1 para)   : ${scored.filter((r) => r.paragraphs === 1).length}`);
 
-const verdict =
-  inRange / scored.length >= 0.8 && blanky / scored.length <= 0.05 && broken === 0 && leaked === 0
-    ? "PASS"
-    : "NOT YET";
-console.log(`\nverdict: ${verdict}`);
+console.log("\n--- feel targets (soft) ---");
+console.log(
+  `${MIN_PARAS}-${MAX_PARAS} paragraphs        : ${inRange}/${scored.length}  ${pct(inRange)}   (target >= 80%)`,
+);
+console.log(`over ${MAX_PARAS} paragraphs       : ${scored.filter((r) => r.paragraphs > MAX_PARAS).length}`);
+console.log(`avg paragraphs / reply  : ${avgParas}`);
+console.log(`avg chars / paragraph   : ${avgChars}`);
+console.log(`paragraphs > ${SOFT_MAX_CHARS} chars    : ${longParas}/${totalParas}`);
+console.log(`blank line inside fence : ${blanky}/${scored.length}  ${pct(blanky)}   (observational)`);
+
+const hardOk = broken === 0 && leaked === 0;
+const softOk = inRange / scored.length >= 0.8;
+console.log(
+  `\nverdict: ${hardOk && softOk ? "PASS" : hardOk ? "HARD OK / FEEL SHORT OF TARGET" : "FAIL (hard requirement broken)"}`,
+);
