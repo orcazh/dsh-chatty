@@ -37,6 +37,7 @@
 
       var React = require("react");
       var jsx = require("react/jsx-runtime").jsx;
+      var h = React.createElement;
       var useEffect = React.useEffect;
       var useRef = React.useRef;
       var useState = React.useState;
@@ -430,6 +431,16 @@
       // reduced motion ("off" does the opposite).
       var forceMotion = readSetting(MOTION_KEY, "auto");
 
+      // G3: the host owns `.spike.config.json` and publishes it over HTTP; the
+      // settings page writes it back. localStorage above stays as the offline
+      // fallback so the cadence still works if the host is unreachable.
+      var REMOTE_BASE = "/dsh-humanize";
+      var remote = { loaded: false, error: null, config: null };
+      // Last session our view rendered in. Used by the settings page to mark
+      // "current" — the client-side sessions service has no active-session
+      // pointer (see docs/RESULT-G6.md), but a rendered node does carry one.
+      var lastSessionId = null;
+
       var FIRST_BUBBLE_MS = 200;
       var PER_CHAR_MS = (function () {
         var value = Number(readSetting("humanize.spike.perchar", "6"));
@@ -437,6 +448,26 @@
       })();
       var MIN_GAP_MS = 400;
       var MAX_GAP_MS = 1200;
+
+      /** Applies the host's `reveal` block to the live tunables. */
+      function applyRevealSettings(reveal) {
+        if (!reveal || typeof reveal !== "object") return;
+        var gap = Number(reveal.gap);
+        if (Number.isFinite(gap) && gap >= 0) {
+          bubbleGap = gap;
+          window.localStorage.setItem(GAP_KEY, String(gap));
+        }
+        var perChar = Number(reveal.perChar);
+        if (Number.isFinite(perChar) && perChar >= 0) {
+          PER_CHAR_MS = perChar;
+          window.localStorage.setItem("humanize.spike.perchar", String(perChar));
+        }
+        bufferStreaming = reveal.buffer !== false;
+        window.localStorage.setItem(BUFFER_KEY, bufferStreaming ? "on" : "off");
+        forceMotion =
+          reveal.motion === "on" || reveal.motion === "off" ? reveal.motion : "auto";
+        window.localStorage.setItem(MOTION_KEY, forceMotion);
+      }
 
       var TYPING_CSS_ID = "spike-humanize-typing-css";
 
@@ -666,6 +697,10 @@
 
       function renderBubbles(props) {
         logPropsOnce(props);
+
+        if (typeof props.sessionId === "string" && props.sessionId.length > 0) {
+          lastSessionId = props.sessionId;
+        }
 
         var data = (props.node && props.node.data) || {};
         var streaming = data.status === "running";
@@ -1084,8 +1119,10 @@
               perCharMs: PER_CHAR_MS,
               motion: forceMotion,
               reducedMotion: prefersReducedMotion(),
-              scoped: scoped.sessionId,
-              scopedActive: !!scoped.dispose,
+              watching: scoped.ids.slice(),
+              attached: Object.keys(scoped.attached),
+              hostLoaded: remote.loaded,
+              hostError: remote.error,
               reveals: {},
             };
             Object.keys(reveals).forEach(function (id) {
@@ -1115,16 +1152,29 @@
           scopedTest: scopedTest,
           // G7: keep it alive across conversation switches.
           scopedWatch: scopedWatch,
+          // G7: cover several sessions at once (what the settings page uses).
+          scopedWatchMany: scopedWatchMany,
           // G7: undo everything and restore the global (mode-driven) registration.
           scopedOff: scopedOff,
           // G7: what is currently scoped?
           get scoped() {
             return {
-              sessionId: scoped.sessionId,
-              active: !!scoped.dispose,
-              watching: !!scoped.timer,
+              watching: scoped.ids.slice(),
+              attached: Object.keys(scoped.attached),
+              polling: !!scoped.timer,
               attaches: scoped.attaches,
             };
+          },
+          // G3: re-read the host config (the settings page does this itself;
+          // this is for the console).
+          remote: function () {
+            return fetchState().then(function (body) {
+              remote.loaded = true;
+              remote.error = null;
+              var result = applyRemoteConfig(body.config, { quiet: false });
+              console.log("[spike-humanize] host config " + safeJson(body.config));
+              return { body: body, result: result };
+            });
           },
           // G1b: is a reusable Markdown renderer reachable from a plugin?
           mods: function (name) {
@@ -1156,6 +1206,30 @@
         }
 
         ensureTypingCss();
+
+        // G3: a whole page in DSH's settings panel. `settings.section` is a
+        // root list slot; each entry is one page in the nav column.
+        try {
+          slots.inject("settings.section", function () {
+            return slots.register(
+              {
+                name: "settings.section",
+                id: "humanize",
+                order: 60,
+                label: function () {
+                  return "拟人化输出";
+                },
+              },
+              SettingsSection,
+            );
+          });
+        } catch (error) {
+          console.warn("[spike-humanize] settings page not registered: " + errText(error));
+        }
+
+        // G3: read the host config and turn the plugin on by itself. Without
+        // this the user still has to type `scopedWatch(...)` in the console.
+        startRemoteConfig();
 
         // G6: dump the sessions service once the app has settled, so it can be
         // read straight off the console without typing anything.
@@ -1192,8 +1266,11 @@
         });
       }
 
-      function registerView(slots, used) {
-        var View = makeView(slots, mode);
+      function registerView(slots, used, kind) {
+        // `kind` is explicit because a scoped registration always renders
+        // bubbles regardless of the manual root mode.
+        var target = kind || mode;
+        var View = makeView(slots, target);
         var attempts = [priority].concat(
           PRIORITY_FALLBACKS.filter(function (p) {
             return p !== priority;
@@ -1224,7 +1301,7 @@
         }
 
         console.log(
-          "[spike-humanize] registered " + ViewName(mode) + " at priority " + used.priority,
+          "[spike-humanize] registered " + ViewName(target) + " at priority " + used.priority,
         );
 
         // Slot contents are only complete once the chat UI has mounted.
@@ -1258,10 +1335,13 @@
       // only allows controllerOperation | gateway), so the only way to survive
       // a switch is to re-attach whenever the scope reappears.
       var scoped = {
-        sessionId: null,
+        // Sessions we are supposed to cover (the allowlist from config).
+        ids: [],
         timer: null,
-        dispose: null,
-        slotService: null,
+        // One attachment per live session scope. DSH keeps at most one
+        // conversation scope alive in practice, but tracking them by id means
+        // switching back and forth never leaks a registration.
+        attached: {},
         attaches: 0,
       };
 
@@ -1313,44 +1393,67 @@
         return slots2 ? { agent: agent, slots: slots2 } : null;
       }
 
-      function detachScoped() {
-        if (scoped.dispose) {
-          try {
-            scoped.dispose();
-          } catch (error) {
-            console.warn("[spike-humanize] scoped dispose failed: " + errText(error));
-          }
+      function detachOne(id) {
+        var entry = scoped.attached[id];
+        if (!entry) return false;
+        delete scoped.attached[id];
+        try {
+          if (typeof entry.dispose === "function") entry.dispose();
+        } catch (error) {
+          console.warn("[spike-humanize] scoped dispose failed: " + errText(error));
         }
-        scoped.dispose = null;
-        scoped.slotService = null;
-        if (rootUsed) rootUsed.priority = null;
+        return true;
+      }
+
+      function detachScoped() {
+        var ids = Object.keys(scoped.attached);
+        for (var i = 0; i < ids.length; i++) detachOne(ids[i]);
+        scoped.attached = {};
       }
 
       /**
-       * One attach attempt. Idempotent: stays attached while the same scope is
-       * alive, re-attaches when the scope was recreated (identity changes).
+       * One attach attempt for one session. Idempotent: stays attached while the
+       * same scope object is alive, re-attaches when DSH recreates the scope
+       * (which happens on every switch away and back).
        */
       function attachScoped(id) {
         var found = sessionScopeOf(id);
-        if (!found) return false;
-        if (scoped.dispose && scoped.slotService === found.slots) return true;
+        var existing = scoped.attached[id];
 
-        detachScoped();
-        var previousMode = mode;
-        mode = "bubbles";
+        if (!found) {
+          if (existing) detachOne(id);
+          return false;
+        }
+        if (existing && existing.slotService === found.slots) return true;
+        if (existing) detachOne(id);
+
         try {
-          var handle = registerView(found.slots, rootUsed);
+          // A fresh priority ledger per slot service: they are independent
+          // registries, so one session colliding must not poison another.
+          var used = { priority: null };
+          var handle = registerView(found.slots, used, "bubbles");
           if (!handle) return false;
-          scoped.dispose = handle;
-          scoped.slotService = found.slots;
+          scoped.attached[id] = { dispose: handle, slotService: found.slots, used: used };
           scoped.attaches += 1;
           return true;
         } catch (error) {
           console.warn("[spike-humanize] scoped register failed: " + errText(error));
           return false;
-        } finally {
-          mode = previousMode;
         }
+      }
+
+      /** Bring every watched session in line with what is mounted right now. */
+      function attachAll() {
+        for (var i = 0; i < scoped.ids.length; i++) attachScoped(scoped.ids[i]);
+        var ids = Object.keys(scoped.attached);
+        for (var j = 0; j < ids.length; j++) {
+          if (scoped.ids.indexOf(ids[j]) < 0) detachOne(ids[j]);
+        }
+      }
+
+      function attachedPriority() {
+        var ids = Object.keys(scoped.attached);
+        return ids.length ? scoped.attached[ids[0]].used.priority : null;
       }
 
       function scopedTest(sessionId) {
@@ -1379,46 +1482,60 @@
 
         if (rootUnmount) rootUnmount();
         detachScoped();
+        scoped.ids = [id];
 
         out.ok = attachScoped(id);
-        out.priority = rootUsed ? rootUsed.priority : null;
+        out.priority = attachedPriority();
         return logOut(out);
       }
 
       /**
-       * Keep the scoped registration alive across conversation switches.
+       * Keep the scoped registrations alive across conversation switches.
        * The session scope is torn down on every switch away, so this polls for
        * its return and re-attaches. (A proper event hook would be better; the
        * client-side sessions service exposes no scope-lifecycle signal.)
        */
-      function scopedWatch(sessionId) {
-        var out = { ts: new Date().toISOString() };
-
-        if (!rootCtx) {
-          out.error = "plugin context not ready yet";
-          return logOut(out);
-        }
-        if (sessionId) scoped.sessionId = sessionId;
-        out.sessionId = scoped.sessionId || null;
-        if (!scoped.sessionId) {
-          out.hint = "pass a session id: __humanizeSpike.scopedWatch('session-...')";
-          return logOut(out);
-        }
+      function scopedWatchMany(ids, options) {
+        var list = (ids || []).filter(function (id) {
+          return typeof id === "string" && id.length > 0;
+        });
 
         if (rootUnmount) rootUnmount();
         detachScoped();
-
-        if (scoped.timer) clearInterval(scoped.timer);
+        if (scoped.timer) {
+          clearInterval(scoped.timer);
+          scoped.timer = null;
+        }
+        scoped.ids = list;
         scoped.attaches = 0;
-        scoped.timer = setInterval(function () {
-          attachScoped(scoped.sessionId);
-        }, 250);
 
-        out.ok = attachScoped(scoped.sessionId);
-        out.priority = rootUsed ? rootUsed.priority : null;
-        out.watching = true;
-        out.pollMs = 250;
-        return logOut(out);
+        if (!list.length) {
+          var empty = { watching: [], attached: [] };
+          if (!options || !options.quiet) logOut(empty);
+          return empty;
+        }
+
+        scoped.timer = setInterval(attachAll, 250);
+        attachAll();
+
+        var out = {
+          watching: list,
+          attached: Object.keys(scoped.attached),
+          priority: attachedPriority(),
+          pollMs: 250,
+        };
+        if (!options || !options.quiet) logOut(out);
+        return out;
+      }
+
+      function scopedWatch(sessionId) {
+        if (!rootCtx) return logOut({ error: "plugin context not ready yet" });
+        if (!sessionId && !scoped.ids.length) {
+          return logOut({
+            hint: "pass a session id: __humanizeSpike.scopedWatch('session-...')",
+          });
+        }
+        return scopedWatchMany(sessionId ? [sessionId] : scoped.ids);
       }
 
       function scopedOff(options) {
@@ -1426,15 +1543,454 @@
           clearInterval(scoped.timer);
           scoped.timer = null;
         }
-        var had = !!scoped.dispose;
+        var had = Object.keys(scoped.attached).length > 0;
         detachScoped();
-        scoped.sessionId = null;
+        scoped.ids = [];
         if (!options || !options.quiet) {
           if (rootMount) rootMount();
         }
         var out = { hadScoped: had, mode: mode };
         if (!options || !options.quiet) logOut(out);
         return out;
+      }
+
+      // --- G3: host-owned config, read and written over HTTP -----------------
+      // The browser cannot read files. The host publishes `.spike.config.json`
+      // on `/dsh-humanize/state` and accepts the two blocks the settings page
+      // owns on `/dsh-humanize/save`. Same shape as dsh-speak-up, which already
+      // runs on this machine.
+      function fetchState() {
+        return fetch(REMOTE_BASE + "/state", { cache: "no-store" }).then(function (response) {
+          if (!response.ok) throw new Error("HTTP " + response.status);
+          return response.json();
+        });
+      }
+
+      function saveState(patch) {
+        return fetch(REMOTE_BASE + "/save", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(patch),
+        }).then(function (response) {
+          if (!response.ok) throw new Error("HTTP " + response.status);
+          return response.json();
+        });
+      }
+
+      /**
+       * Applies a host config to the live plugin: reveal tunables first, then
+       * the scope. Returns what the scope ended up watching (for diagnostics).
+       */
+      function applyRemoteConfig(config, options) {
+        if (!config || typeof config !== "object") return null;
+        remote.config = config;
+        applyRevealSettings(config.reveal);
+
+        var scope = config.scope || {};
+        var quiet = options && options.quiet;
+
+        if (scope.mode === "off") {
+          scopedOff({ quiet: true });
+          return { watching: [] };
+        }
+        if (scope.mode === "all") {
+          // Kept as a manual console escape hatch: register on the root slot
+          // service, which touches every session in the window.
+          console.warn(
+            "[spike-humanize] scope.mode=all is manual only; run __humanizeSpike.setMode('bubbles')",
+          );
+          return { watching: "all" };
+        }
+
+        var ids = Array.isArray(scope.sessions) ? scope.sessions : [];
+        if (!ids.length) {
+          // An empty allowlist is a valid state: nothing is enabled, nothing
+          // is touched. Do not fall back to "everything".
+          scopedOff({ quiet: true });
+          return { watching: [] };
+        }
+        // Saving only a cadence change must not tear down and re-register every
+        // live session (that remounts the chat rows for no reason).
+        var unchanged =
+          scoped.timer !== null &&
+          ids.length === scoped.ids.length &&
+          ids.every(function (id, index) {
+            return scoped.ids[index] === id;
+          });
+        if (unchanged) return { watching: ids, unchanged: true };
+
+        return scopedWatchMany(ids, { quiet: quiet });
+      }
+
+      /**
+       * Reads the host config once at load. The routes may not be up on the
+       * very first tick (the plugin loads before the server finishes wiring),
+       * so a short retry ladder is cheaper than asking the user to reload.
+       */
+      function startRemoteConfig() {
+        if (typeof fetch !== "function") {
+          console.warn("[spike-humanize] fetch unavailable; using local settings only");
+          return;
+        }
+
+        var tries = 0;
+        var MAX_TRIES = 6;
+
+        function attempt() {
+          tries += 1;
+          fetchState()
+            .then(function (body) {
+              if (!body || body.ok !== true) throw new Error("unexpected payload");
+              remote.loaded = true;
+              remote.error = null;
+              var result = applyRemoteConfig(body.config, { quiet: true });
+              console.log(
+                "[spike-humanize] host config applied " +
+                  safeJson({
+                    scope: (body.config || {}).scope,
+                    reveal: (body.config || {}).reveal,
+                    attached: Object.keys(scoped.attached),
+                    watching: result && result.watching,
+                  }),
+              );
+            })
+            .catch(function (error) {
+              remote.error = errText(error);
+              if (tries < MAX_TRIES) {
+                setTimeout(attempt, 700);
+                return;
+              }
+              console.warn(
+                "[spike-humanize] host config unavailable (" +
+                  remote.error +
+                  "); using local settings only",
+              );
+            });
+        }
+
+        attempt();
+      }
+
+      // --- G3: settings page -------------------------------------------------
+      var SETTINGS_CSS_ID = "spike-humanize-settings-css";
+
+      function ensureSettingsCss() {
+        try {
+          if (document.getElementById(SETTINGS_CSS_ID)) return;
+          var style = document.createElement("style");
+          style.id = SETTINGS_CSS_ID;
+          style.textContent =
+            "[data-hz-page]{padding:4px 2px 32px;font-size:13px;line-height:1.7}" +
+            "[data-hz-page] h3{font-size:14px;font-weight:600;margin:0 0 4px}" +
+            "[data-hz-dim]{opacity:.62;font-size:12px}" +
+            "[data-hz-card]{border:1px solid var(--dsw-alias-border-l1,rgba(0,0,0,.1));border-radius:10px;padding:12px 14px;margin:12px 0}" +
+            "[data-hz-row]{display:flex;align-items:center;gap:10px;padding:4px 0}" +
+            "[data-hz-row] input[type=checkbox]{margin:0}" +
+            "[data-hz-row] input[type=range]{flex:1;min-width:120px}" +
+            "[data-hz-num]{width:64px;text-align:right;font-variant-numeric:tabular-nums}" +
+            "[data-hz-session]{display:flex;align-items:center;gap:8px;padding:3px 0}" +
+            "[data-hz-actions]{display:flex;align-items:center;gap:12px;margin-top:12px}" +
+            "[data-hz-save]{padding:5px 14px;border-radius:8px;border:1px solid var(--dsw-alias-border-l1,rgba(0,0,0,.12));background:var(--dsw-alias-bg-layer-1,rgba(255,255,255,.9));cursor:pointer}" +
+            "[data-hz-save][disabled]{opacity:.5;cursor:default}" +
+            "[data-hz-err]{color:#c0392b}";
+          document.head.appendChild(style);
+        } catch {
+          // no DOM: the page still renders, just unstyled
+        }
+      }
+
+      /**
+       * One page in DSH's settings panel (`settings.section`). It owns the
+       * whole product surface: whether the plugin is on, which sessions it
+       * covers, and how fast the bubbles arrive.
+       */
+      function SettingsSection() {
+        ensureSettingsCss();
+
+        var dataPair = useState(null);
+        var data = dataPair[0];
+        var setData = dataPair[1];
+
+        var draftPair = useState(null);
+        var draft = draftPair[0];
+        var setDraft = draftPair[1];
+
+        var errorPair = useState(null);
+        var error = errorPair[0];
+        var setError = errorPair[1];
+
+        var notePair = useState("");
+        var note = notePair[0];
+        var setNote = notePair[1];
+
+        var busyPair = useState(false);
+        var busy = busyPair[0];
+        var setBusy = busyPair[1];
+
+        function adopt(body) {
+          var scope = (body.config || {}).scope || {};
+          var reveal = (body.config || {}).reveal || {};
+          setData(body);
+          setDraft({
+            enabled: scope.mode === "allowlist" || scope.mode === "all",
+            sessions: Array.isArray(scope.sessions) ? scope.sessions.slice() : [],
+            gap: Number.isFinite(Number(reveal.gap)) ? Number(reveal.gap) : 450,
+            perChar: Number.isFinite(Number(reveal.perChar)) ? Number(reveal.perChar) : 6,
+            buffer: reveal.buffer !== false,
+            motion: reveal.motion === "on" || reveal.motion === "off" ? reveal.motion : "auto",
+          });
+        }
+
+        function load() {
+          fetchState()
+            .then(function (body) {
+              if (!body || body.ok !== true) throw new Error("宿主返回了意外的内容");
+              adopt(body);
+              setError(null);
+            })
+            .catch(function (caught) {
+              setError(errText(caught));
+            });
+        }
+
+        useEffect(function () {
+          load();
+          return undefined;
+        }, []);
+
+        function edit(patch) {
+          setDraft(Object.assign({}, draft, patch));
+          setNote("");
+        }
+
+        function toggleSession(id) {
+          var list = (draft.sessions || []).slice();
+          var index = list.indexOf(id);
+          if (index >= 0) list.splice(index, 1);
+          else list.push(id);
+          edit({ sessions: list });
+        }
+
+        function save() {
+          setBusy(true);
+          setError(null);
+          saveState({
+            scope: {
+              mode: draft.enabled ? "allowlist" : "off",
+              sessions: draft.sessions || [],
+            },
+            reveal: {
+              gap: Number(draft.gap),
+              perChar: Number(draft.perChar),
+              buffer: draft.buffer,
+              motion: draft.motion,
+            },
+          })
+            .then(function (body) {
+              if (!body || body.ok !== true) {
+                throw new Error((body && body.error) || "保存失败");
+              }
+              adopt(body);
+              applyRemoteConfig(body.config, { quiet: true });
+              setNote("已保存，立即生效");
+            })
+            .catch(function (caught) {
+              setError(errText(caught));
+            })
+            .then(function () {
+              setBusy(false);
+            });
+        }
+
+        var children = [];
+
+        children.push(h("div", { key: "title", children: "拟人化输出" }));
+        children.push(
+          h(
+            "div",
+            { key: "intro", "data-hz-dim": "1" },
+            "把 AI 的一条回复拆成几条消息、隔一会儿发一条，像人在聊天。",
+          ),
+        );
+
+        if (error) {
+          children.push(
+            h(
+              "div",
+              { key: "error", "data-hz-card": "1" },
+              h("div", { "data-hz-err": "1", children: "连不上宿主：" + error }),
+              h(
+                "div",
+                { "data-hz-dim": "1" },
+                "请完全退出 DSH 再启动（托盘退出，不是关窗口），然后回到这里重试。",
+              ),
+            ),
+          );
+        }
+
+        if (!draft) {
+          if (!error) {
+            children.push(h("div", { key: "loading", "data-hz-dim": "1" }, "正在读取设置…"));
+          }
+          return h("div", { "data-hz-page": "1" }, children);
+        }
+
+        // --- on / off ------------------------------------------------------
+        children.push(
+          h(
+            "div",
+            { key: "scope", "data-hz-card": "1" },
+            h(
+              "label",
+              { "data-hz-row": "1" },
+              h("input", {
+                type: "checkbox",
+                checked: draft.enabled,
+                onChange: function (event) {
+                  edit({ enabled: event.target.checked });
+                },
+              }),
+              h("span", { children: "在选定会话当中生效" }),
+            ),
+            h(
+              "div",
+              { "data-hz-dim": "1" },
+              draft.enabled
+                ? "只有下面勾选的会话会变成多条消息；其他会话保持原样。"
+                : "当前全部关闭。聊天界面完全保持 DSH 原样。",
+            ),
+          ),
+        );
+
+        // --- session checklist --------------------------------------------
+        if (draft.enabled) {
+          var sessions = (data && data.sessions) || [];
+          var rows = [];
+
+          if (!sessions.length) {
+            rows.push(
+              h(
+                "div",
+                { key: "none", "data-hz-dim": "1" },
+                "还没有可选的会话。先在 DSH 里打开一个会话，再回到这里。",
+              ),
+            );
+          }
+
+          for (var i = 0; i < sessions.length; i++) {
+            (function (row) {
+              var checked = (draft.sessions || []).indexOf(row.id) >= 0;
+              rows.push(
+                h(
+                  "label",
+                  { key: row.id, "data-hz-session": "1" },
+                  h("input", {
+                    type: "checkbox",
+                    checked: checked,
+                    onChange: function () {
+                      toggleSession(row.id);
+                    },
+                  }),
+                  h("span", { children: row.title || "（没有标题的会话）" }),
+                  h("span", { "data-hz-dim": "1", children: "…" + row.shortId }),
+                  row.id === lastSessionId
+                    ? h("span", { "data-hz-dim": "1", children: "· 当前" })
+                    : null,
+                ),
+              );
+            })(sessions[i]);
+          }
+
+          children.push(
+            h(
+              "div",
+              { key: "sessions", "data-hz-card": "1" },
+              h("h3", { children: "在哪些会话里生效" }),
+              h("div", { "data-hz-dim": "1" }, "勾选后就对那个会话生效，切换会话不影响其他会话。"),
+              rows,
+              (draft.sessions || []).length === 0
+                ? h(
+                    "div",
+                    { "data-hz-err": "1" },
+                    "还没有勾选任何会话，所以现在实际上不会生效。",
+                  )
+                : null,
+            ),
+          );
+        }
+
+        // --- cadence -------------------------------------------------------
+        children.push(
+          h(
+            "div",
+            { key: "cadence", "data-hz-card": "1" },
+            h("h3", { children: "出条速度" }),
+            h(
+              "div",
+              { "data-hz-row": "1" },
+              h("span", { style: { minWidth: 88 }, children: "基础停顿" }),
+              h("input", {
+                type: "range",
+                min: "0",
+                max: "1500",
+                step: "50",
+                value: draft.gap,
+                onChange: function (event) {
+                  edit({ gap: Number(event.target.value) });
+                },
+              }),
+              h("span", { "data-hz-num": "1", children: String(draft.gap) + "ms" }),
+            ),
+            h(
+              "div",
+              { "data-hz-row": "1" },
+              h("span", { style: { minWidth: 88 }, children: "每字追加" }),
+              h("input", {
+                type: "range",
+                min: "0",
+                max: "30",
+                step: "1",
+                value: draft.perChar,
+                onChange: function (event) {
+                  edit({ perChar: Number(event.target.value) });
+                },
+              }),
+              h("span", { "data-hz-num": "1", children: String(draft.perChar) + "ms" }),
+            ),
+            h(
+              "div",
+              { "data-hz-dim": "1" },
+              "下一条气泡的等待时间 = 基础停顿 + 它自己的字数 × 每字追加（400–1200ms 之间）。" +
+                "当前一条 60 字的消息约等 " +
+                String(Math.min(1200, Math.max(400, Number(draft.gap) + Number(draft.perChar) * 60))) +
+                "ms。",
+            ),
+          ),
+        );
+
+        // --- actions --------------------------------------------------------
+        children.push(
+          h(
+            "div",
+            { key: "actions", "data-hz-actions": "1" },
+            h(
+              "button",
+              {
+                type: "button",
+                "data-hz-save": "1",
+                disabled: busy,
+                onClick: save,
+              },
+              busy ? "保存中…" : "保存",
+            ),
+            note ? h("span", { "data-hz-dim": "1", children: note }) : null,
+            data && data.configFile
+              ? h("span", { "data-hz-dim": "1", children: "配置：" + data.configFile })
+              : null,
+          ),
+        );
+
+        return h("div", { "data-hz-page": "1" }, children);
       }
 
 

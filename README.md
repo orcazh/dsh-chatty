@@ -44,20 +44,18 @@ npm run install:spike
 
 然后**重启 DSH Desktop**（安装脚本会先备份 profile 的 `package.json`）。
 
+打开 **DSH 设置 → 左侧「拟人化输出」**，勾选「在选定会话当中生效」，
+选好会话，保存。之后在该会话里正常提问，回复就会变成多条气泡逐条出现。
+
 启动后打开 DevTools（Electron：`Ctrl+Shift+I`），Console 里应能看到：
 
 ```
 [spike-humanize] client script evaluated
-[spike-humanize] client loaded { mode: "probe", priority: 0 }
+[spike-humanize] client loaded { mode: "off", priority: -100 }
+[spike-humanize] host config applied {"scope":{"mode":"allowlist",...},"attached":["session-..."]}
 ```
 
-宿主半边即使日志不可见，也会写一条启动记录：
-
-```
-spike-humanize\.spike-output\host-boot.jsonl
-```
-
-`npm run verify` 全绿但重启后仍无反应 → 说明问题在 DSH 的 bundle 扫描/挂载阶段，不是包清单问题。
+`host config applied` 这一行是关键：有它才说明客户端读到了宿主配置并自动生效。
 
 ---
 
@@ -65,13 +63,18 @@ spike-humanize\.spike-output\host-boot.jsonl
 
 探针**默认完全惰性**：不注入提示词、不捕获消息、不遮蔽渲染。正常编程会话不受影响。
 
-宿主侧开关在 `spike-humanize/spike.config.json` 的 `scope`，改完**下一回合即生效，无需重启**（文件 mtime 变更即重载）：
+**主要入口是设置页**：DSH 设置 → 左侧「拟人化输出」，勾选「在选定会话当中生效」，
+再勾选具体会话，保存即可。改完立刻生效，不用重启。
+
+底层仍然是 `spike-humanize/spike.config.json` 的 `scope`（设置页写的就是它），
+改完**下一回合即生效**（文件 mtime 变更即重载）：
 
 ```json
 "scope": { "mode": "off", "sessions": [] }
 ```
 
 `mode` 三档：`off` / `allowlist` / `all`。未知值按 `off` 处理（fail-closed）。
+`all` 不会自动执行（那会违反 D4），只是给 Console 调试留的口子。
 
 用 CLI 操作（会自动帮你列出探针见过的会话 id）：
 
@@ -91,7 +94,10 @@ npm run scope -- all              # 全部启用（会影响所有会话，慎�
 
 ## 三种客户端模式
 
-客户端渲染**也默认 `off`**。要测 G1 时手动打开，然后**刷新窗口**（`Ctrl+R`）：
+> **日常使用不用看这一节。** 设置页（`settings.section`）已经接管了开关，客户端模式保持
+> `off`，实际生效走「会话作用域注册」。下面的手动模式是调试渲染用的。
+
+客户端渲染**默认 `off`**。要测 G1 时手动打开，然后**刷新窗口**（`Ctrl+R`）：
 
 ```js
 window.__humanizeSpike.setMode("probe")   // 红框 + JSON 调试卡
@@ -173,11 +179,30 @@ spike-humanize/.spike-output/assistant.jsonl
 
 ## G3：客户端数据与配置
 
-- `probe` 模式下，Console 会输出每次渲染的 `turn / step / status / chars / kinds`；
-- 观察流式过程中 `chars` 是否递增 → 判断能否“边流边分段”；
-- 配置 RPC 尚未实现（需要先在 Spike 中确认宿主注册方式），当前用 `spike.config.json` 代替。
+**已采用**：宿主注册 HTTP 路由 + 客户端 `fetch`（不是自己造 RPC）。
+详见 `docs/RESULT-G3.md`。
 
-记录到 `docs/RESULT-G3.md`。
+- 读：`GET /dsh-humanize/state` → `{ config, sessions[], configFile }`
+- 写：`POST /dsh-humanize/save` → 只接受 `scope` 与 `reveal`
+- 设置页：`settings.section` 槽位，DSH 设置面板左侧多一项「拟人化输出」
+
+客户端启动会自动读这份配置：白名单非空就自动在那些会话里生效，
+**不需要再在 Console 里敲 `scopedWatch`**。宿主连不上时退回 `localStorage`。
+
+Console 里检查：
+
+```js
+__humanizeSpike.diag()     // hostLoaded / hostError / watching / attached
+__humanizeSpike.remote()   // 手动重读宿主配置
+```
+
+`reveal` 两项现在由设置页管理（`spike.config.json` 里的 `reveal`）：
+
+```json
+"reveal": { "gap": 450, "perChar": 6, "buffer": true, "motion": "auto" }
+```
+
+`__humanizeSpike.gap()` / `.perChar()` 仍然可用，但只改当前窗口，不落盘。
 
 ---
 

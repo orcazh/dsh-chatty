@@ -1,64 +1,151 @@
-# G3 结果：客户端数据与配置
+# G3 结果：客户端读写宿主配置
 
-**日期**：
-**结论**：通过 / 部分通过 / 不通过
+**日期**：2026-10-27
+**DSH 版本**：0.2.1-rc.3
+**结论**：**通道已打通（实现完成，待实机确认）**
 
 ---
 
-## 3a 渲染 props
+## 一句话结论
 
-`probe` 模式下打印的字段：
+**用宿主注册 HTTP 路由 + 客户端 `fetch`，不要自己造 RPC。**
+
+这条路不是我猜的：同机已安装的第三方插件 `dsh-speak-up` 就是这么做的
+（`lib/host.js` 注册 `/dsh-speak-up/*`，`lib/client.js` 直接 `fetch`），
+而且 `dsh-write` / `dsh-fish-memory` 用的也是同一个路子。
+
+---
+
+## 3c 配置通道
+
+### 被否决的两条路
+
+| 方案 | 否决原因 |
+| :--- | :--- |
+| `ctx.connection.rpc` 手写 RPC | 签名能摸清（`call(channel, endpoint, payload, signal)`，channel 固定 `/api`），但 `/api` 是 **Typert Remote 的生成式网关**：endpoint 需要宿主侧声明的服务 + 生成器产物。插件自己塞一个 endpoint 进去，没有受支持的注册口子。 |
+| `ctx.configForms`（客户端）/ `ctx.settings.configure`（宿主） | 这是 DSH **原生的插件配置页**机制，确实存在：客户端 `ctx.configForms.get(ns)` 有 `getSnapshot() / subscribe(fn) / set(field, value)`；宿主按 `dsh-client-ui-chat` 的写法 `ctx.inject(["settings"], c => c.effect(() => c.settings.configure({auto:false}, ctx.fiber)))`。**没用**是因为命名空间是由插件包名推导的（`@deepseek-ai/dsh-client-ui-conversation` → `"ui-conversation"`），第三方包名的推导规则没有文档，试错成本高于收益，而且它要求把 UI 做成 `settings.general.item` 的行，撑不起「会话勾选列表 + 滑杆」这样的页面。**留作正式版的候选。** |
+
+### 采用的方案
+
+**宿主半边**
+
+```js
+export const inject = ["systemPrompt", "webServer"];
+
+ctx.effect(() =>
+  ctx.webServer.register({
+    kind: "exact",            // exact | prefix
+    path: "/dsh-humanize/state",
+    handler: async (req, res) => { /* JSON */ },
+  }),
+);
+```
+
+**客户端半边**
+
+```js
+fetch("/dsh-humanize/state", { cache: "no-store" })   // 读
+fetch("/dsh-humanize/save", { method: "POST", ... })  // 写
+```
+
+要点：
+
+- 路径用**相对路径**即可。DSH 自己的 `/api` 也是相对请求，说明页面 origin
+  能到达宿主 web server。
+- 注册必须包在 `ctx.effect()` 里，插件卸载时路由才会被撤掉。
+- 路由回调必须自己 `try/catch` 并返回 JSON —— 抛出去会变成浏览器里的
+  `net::ERR_EMPTY_RESPONSE`，无从排查。
+
+### 我们的两个路由
+
+| 方法 | 路径 | 用途 |
+| :--- | :--- | :--- |
+| GET/POST | `/dsh-humanize/state` | 返回 `{ ok, config, sessions[], configFile }` |
+| POST | `/dsh-humanize/save` | 只接受 `scope` 与 `reveal` 两块，合并写回 `spike.config.json` |
+
+`sessions[]` 由宿主 `sessions.list()` + `sessionTitle.get()` 组装，
+拿不到标题就退回 `…<id 后 6 位>`；`sessions.list()` 太薄时用
+`.spike-output/sessions.jsonl` 里见过的 id 兜底。
+
+`save` **只收两块**，是有意的：提示词正文（`sectionText`）和捕获开关
+属于调试项，不该出现在给普通用户看的设置页上。
+
+---
+
+## 设置页
+
+`settings.section` 槽位（root / list）。注册选项 `{ id, order, label }`，
+owner props 只有 `{ close }`。每个条目是设置面板左侧导航里的一整页。
+
+选项与 props 是从 DSH 客户端 runner 内嵌的**槽位目录**里读出来的，
+不是试错：
 
 ```
+key: "settings.section"  kind: list  scope: root
+registerOptions: id (required), order (optional), label (string | ()=>string)
+ownerProps: { close: () => void }
+declaredBy: an entry in 'sidebar.settings' (client-ui-settings-general)
 ```
 
-| 字段 | 是否可用 | 备注 |
-| :--- | :--- | :--- |
-| `node.data.turn` |  |  |
-| `node.data.step` |  |  |
-| `node.data.status` |  |  |
-| `node.data.blocks` |  |  |
-| `node.location` |  |  |
+页面内容（v0.1 骨架）：
+
+1. 「在选定会话当中生效」开关 → `scope.mode = allowlist | off`
+2. 会话勾选列表（标题 + 短 id，当前会话标「当前」）
+3. 两个滑杆：基础停顿 `reveal.gap`、每字追加 `reveal.perChar`
+4. 保存 → 写宿主 → **立刻应用到正在运行的客户端**（同一个 JS 上下文，
+   不需要轮询、不需要刷新）
 
 ---
 
-## 3b 实时增量
+## 启动即自动生效
 
-| 时间点 | chars | 说明 |
-| :--- | :--- | :--- |
-| 0ms |  |  |
-| 200ms |  |  |
-| 500ms |  |  |
-| 1s |  |  |
+客户端 `apply()` 末尾读一次 `/dsh-humanize/state`：
 
-结论：能否边流边分段？
+- `scope.mode === "allowlist"` 且会话非空 → `scopedWatchMany(ids)`
+- `scope.mode === "off"` 或会话为空 → 什么都不挂
+- `scope.mode === "all"` → 只打警告。它保留为 Console 里的调试逃生口，
+  自动执行会让「不得全局常开」（D4）失效
+
+路由可能比插件晚就绪，所以带 6 次 × 700ms 的重试阶梯。
+全部失败时退回 `localStorage` 的旧设置，插件仍然可用，只是不再自动开启。
+
+### 多会话
+
+`scoped` 从「单个会话」改成 `{ ids, attached: { [id]: { dispose, slotService, used } } }`：
+
+- 每个会话作用域**独立**的 `used` 优先级账本（它们是不同的 slot 服务，
+  一个会话的优先级冲突不该污染另一个）
+- 每 250ms `attachAll()`：作用域在就对齐，消失就注销，
+  被移出白名单的会话也一并注销
 
 ---
 
-## 3c 配置 RPC
-
-采用路径：Typert Remote / Raw RPC（二选一）
-
-| 方法 | 结果 | 延迟 |
-| :--- | :--- | :--- |
-| `get` |  |  |
-| `set` |  |  |
-| `subscribe` |  |  |
+## 检查项
 
 | 检查项 | 结果 |
 | :--- | :--- |
-| 刷新后配置保持 |  |
-| 双标签页同步 |  |
-| RPC 失败时回退默认值 |  |
+| 配置存文件，重启后保持 | 是（`spike.config.json`，宿主唯一真源） |
+| 客户端启动读到宿主配置 | 待实机确认 |
+| 保存后立即生效，无需重启 | 待实机确认 |
+| 宿主不可达时退回 localStorage | 是（代码路径 + smoke） |
+| 空白名单不降级成「全部生效」 | 是（fail-closed，smoke 覆盖） |
 
 ---
 
-## 多标签页 / 多会话
+## 离线测试（`npm run smoke`）
 
--
+新增 `client/remote`：
+用假的 `fetch` 返回一份 allowlist 配置，断言
+
+- 启动时确实请求了 `/dsh-humanize/state`
+- 根 slot 注册仍然 `off`（不是全局常开）
+- `reveal.gap / perChar` 被应用到运行时
+- `scoped.watching` 等于白名单，但 `scoped.attached` 为空
+  （会话没打开就不该有注册）
 
 ---
 
-## 结论与下一步
+## 下一步
 
--
+- 实机确认：启动即生效、设置页可读写、保存后立刻生效
+- 之后：G4（`agent.followup` 的 UI 与生命周期）

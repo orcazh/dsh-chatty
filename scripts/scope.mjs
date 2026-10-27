@@ -28,6 +28,7 @@ const DEFAULTS = {
   captureAssistant: true,
   verbose: false,
   scope: { mode: "off", sessions: [] },
+  reveal: { gap: 450, perChar: 6, buffer: true, motion: "auto" },
 };
 
 function readConfig() {
@@ -37,9 +38,14 @@ function readConfig() {
       ...DEFAULTS,
       ...parsed,
       scope: { ...DEFAULTS.scope, ...(parsed.scope ?? {}) },
+      reveal: { ...DEFAULTS.reveal, ...(parsed.reveal ?? {}) },
     };
   } catch {
-    return { ...DEFAULTS, scope: { ...DEFAULTS.scope } };
+    return {
+      ...DEFAULTS,
+      scope: { ...DEFAULTS.scope },
+      reveal: { ...DEFAULTS.reveal },
+    };
   }
 }
 
@@ -70,6 +76,10 @@ function show() {
   console.log(`\nscope.mode : ${mode}`);
   console.log(`allowed    : ${sessions.length ? sessions.join(", ") : "(none)"}`);
   console.log(`promptSection: ${config.promptSection}   capture: ${config.captureAssistant}`);
+  console.log(
+    `reveal     : gap ${config.reveal.gap}ms + ${config.reveal.perChar}ms/char` +
+      `   buffer ${config.reveal.buffer ? "on" : "off"}   motion ${config.reveal.motion}`,
+  );
   console.log(`config     : ${CONFIG_FILE}`);
 
   if (mode === "off") {

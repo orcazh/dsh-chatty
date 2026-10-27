@@ -12,7 +12,7 @@
  * This is throwaway code. Do not build product features on it.
  */
 
-import { appendFileSync, mkdirSync, readFileSync, statSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -36,7 +36,20 @@ const DEFAULT_CONFIG = {
     mode: "off",
     sessions: [],
   },
+  // FR-1 cadence. Owned by the settings page, read by the browser half.
+  // `.spike.config.json` is the single source of truth for both halves.
+  reveal: {
+    gap: 450,
+    perChar: 6,
+    buffer: true,
+    // auto | on | off — "on" keeps the cadence even when the OS asks for
+    // reduced motion ("off" does the opposite).
+    motion: "auto",
+  },
 };
+
+const SCOPE_MODES = ["off", "allowlist", "all"];
+const MOTION_MODES = ["auto", "on", "off"];
 
 // Tuned 2026-10-27 (G2 round 2): the first version produced 2-6 paragraphs but
 // the owner judged it "still not fragmented enough" for a chat feel, so the
@@ -56,9 +69,10 @@ const SECTION_TEXT = SECTION_TEXT_LINES.join("\n");
 
 export const name = "spike-humanize";
 
-// `systemPrompt` is the only service we truly need. Everything else is
-// probed defensively so a missing service cannot block plugin load.
-export const inject = ["systemPrompt"];
+// `systemPrompt` is where the L2 section goes; `webServer` carries the config
+// channel the browser half reads (`/dsh-humanize/*`). Both are optional at the
+// call site — a deployment without them degrades to a file-only config.
+export const inject = ["systemPrompt", "webServer"];
 
 export function apply(ctx) {
   const config = createConfigReader();
@@ -92,7 +106,17 @@ export function apply(ctx) {
   );
 
   // --- G3 helper: which services are reachable from the host half? ---------
-  const services = ["connection", "agent", "sessionController", "tools", "systemPrompt", "remote"];
+  const services = [
+    "connection",
+    "agent",
+    "sessionController",
+    "tools",
+    "systemPrompt",
+    "remote",
+    "webServer",
+    "sessions",
+    "sessionTitle",
+  ];
   const available = {};
   for (const service of services) {
     try {
@@ -102,6 +126,13 @@ export function apply(ctx) {
     }
   }
   log("host services", available);
+
+  // --- G3: config channel for the browser half ------------------------------
+  // The browser cannot read files, so the host publishes the config over two
+  // exact HTTP routes and the settings page writes it back. This is the same
+  // pattern `dsh-speak-up` uses on this machine (a shipping third-party
+  // plugin), and it avoids inventing an RPC on the connection service.
+  installConfigRoutes(ctx, config, log, warn);
 
   const seen = new Set();
 
@@ -232,28 +263,238 @@ function sectionTextOf(config) {
   return SECTION_TEXT;
 }
 
-/** Reads spike.config.json, re-parsing only when the file changes. */
+/** Fills in defaults and clamps values that arrive from the settings page. */
+function sanitizeConfig(input) {
+  const raw = input && typeof input === "object" ? input : {};
+  const scope = raw.scope && typeof raw.scope === "object" ? raw.scope : {};
+  const reveal = raw.reveal && typeof raw.reveal === "object" ? raw.reveal : {};
+
+  return {
+    ...DEFAULT_CONFIG,
+    ...raw,
+    promptSection: raw.promptSection !== false,
+    sectionOrder: numberIn(raw.sectionOrder, DEFAULT_CONFIG.sectionOrder, 0, 10000),
+    captureAssistant: raw.captureAssistant !== false,
+    verbose: raw.verbose === true,
+    sectionText: raw.sectionText ?? null,
+    scope: {
+      mode: SCOPE_MODES.includes(scope.mode) ? scope.mode : "off",
+      sessions: Array.isArray(scope.sessions)
+        ? [...new Set(scope.sessions.filter((id) => typeof id === "string" && id.length > 0))]
+        : [],
+    },
+    reveal: {
+      gap: numberIn(reveal.gap, DEFAULT_CONFIG.reveal.gap, 0, 3000),
+      perChar: numberIn(reveal.perChar, DEFAULT_CONFIG.reveal.perChar, 0, 50),
+      buffer: reveal.buffer !== false,
+      motion: MOTION_MODES.includes(reveal.motion) ? reveal.motion : "auto",
+    },
+  };
+}
+
+function numberIn(value, fallback, min, max) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return fallback;
+  return Math.min(max, Math.max(min, Math.round(number)));
+}
+
+/**
+ * Reads spike.config.json, re-parsing only when the file changes.
+ * `save(patch)` writes the merged result back and refreshes the cache in the
+ * same call, so a save never races the mtime check.
+ */
 function createConfigReader() {
-  let cache = { ...DEFAULT_CONFIG };
+  let cache = sanitizeConfig(DEFAULT_CONFIG);
   let stamp = -1;
 
-  return function readConfig() {
+  function read() {
     try {
       const info = statSync(CONFIG_FILE);
       if (info.mtimeMs !== stamp) {
         stamp = info.mtimeMs;
         const parsed = JSON.parse(readFileSync(CONFIG_FILE, "utf8").replace(/^\uFEFF/, ""));
-        cache = {
-          ...DEFAULT_CONFIG,
-          ...parsed,
-          scope: { ...DEFAULT_CONFIG.scope, ...(parsed.scope ?? {}) },
-        };
+        cache = sanitizeConfig(parsed);
       }
     } catch {
       // keep the last good config; first failure falls back to inert defaults
     }
     return cache;
+  }
+
+  read.save = (patch) => {
+    const merged = { ...read() };
+    for (const key of Object.keys(patch ?? {})) {
+      if (patch[key] !== undefined) merged[key] = patch[key];
+    }
+    const next = sanitizeConfig(merged);
+    writeFileSync(CONFIG_FILE, JSON.stringify(next, null, 2) + "\n", "utf8");
+    cache = next;
+    try {
+      stamp = statSync(CONFIG_FILE).mtimeMs;
+    } catch {
+      stamp = -1;
+    }
+    return next;
   };
+
+  return read;
+}
+
+/**
+ * Publishes `/dsh-humanize/state` (read) and `/dsh-humanize/save` (write).
+ * Registered through `ctx.effect` so unloading the plugin removes the routes.
+ */
+function installConfigRoutes(ctx, config, log, warn) {
+  const webServer = safeService(ctx, "webServer") ?? ctx.webServer;
+  if (!webServer || typeof webServer.register !== "function") {
+    warn("webServer unavailable — the settings page will not reach the host");
+    return;
+  }
+
+  const reply = (res, body, status = 200) => {
+    res.writeHead(status, {
+      "content-type": "application/json; charset=utf-8",
+      "cache-control": "no-store",
+    });
+    res.end(JSON.stringify(body));
+  };
+
+  const readBody = async (req) => {
+    let body = "";
+    for await (const chunk of req) body += chunk;
+    try {
+      return body ? JSON.parse(body) : {};
+    } catch {
+      return {};
+    }
+  };
+
+  const snapshot = () => ({
+    ok: true,
+    config: config(),
+    sessions: listSessions(ctx),
+    configFile: CONFIG_FILE,
+  });
+
+  const route = (path, handler) => {
+    try {
+      ctx.effect(() =>
+        webServer.register({
+          kind: "exact",
+          path,
+          handler: async (req, res) => {
+            try {
+              await handler(req, res);
+            } catch (error) {
+              reply(res, { ok: false, error: String((error && error.message) || error) }, 500);
+            }
+          },
+        }),
+      );
+    } catch (error) {
+      warn(`route ${path} not registered: ${String((error && error.message) || error)}`);
+    }
+  };
+
+  route("/dsh-humanize/state", async (req, res) => reply(res, snapshot()));
+
+  route("/dsh-humanize/save", async (req, res) => {
+    const patch = await readBody(req);
+    // Only the two blocks the settings page owns are accepted off the wire;
+    // prompt text and capture flags stay file-only on purpose.
+    const next = config.save({
+      scope: patch && patch.scope,
+      reveal: patch && patch.reveal,
+    });
+    log("config saved from settings page", { scope: next.scope, reveal: next.reveal });
+    reply(res, { ...snapshot(), saved: true });
+  });
+
+  log("config routes ready: /dsh-humanize/state, /dsh-humanize/save");
+}
+
+/** Sessions the settings page can offer, most useful first. */
+function listSessions(ctx) {
+  const out = [];
+  const seen = new Set();
+
+  const push = (id) => {
+    if (typeof id !== "string" || id.length === 0) return;
+    // The same session can show up as `session-<uuid>` (sessions.list()) and as
+    // bare `<uuid>` (agents.list()). Dedupe on the prefix-stripped key but keep
+    // the original spelling, so a checkbox can never be listed twice.
+    const key = id.startsWith("session-") ? id.slice("session-".length) : id;
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push({ id, shortId: id.slice(-6), title: sessionTitleOf(ctx, id) });
+  };
+
+  const sessions = safeService(ctx, "sessions");
+  let rows = [];
+  try {
+    rows = sessions && typeof sessions.list === "function" ? sessions.list() : [];
+  } catch {
+    rows = [];
+  }
+  if (Array.isArray(rows)) {
+    for (const row of rows) {
+      push(typeof row === "string" ? row : row && (row.id ?? row.sessionId));
+    }
+  }
+
+  // Before a session has been opened in this run, `sessions.list()` is thin.
+  // Fall back to the ids the probe has already seen in prompt assembly.
+  for (const id of readSeenSessionIds()) push(id);
+
+  return out.slice(0, 60);
+}
+
+function sessionTitleOf(ctx, id) {
+  try {
+    const titles = safeService(ctx, "sessionTitle");
+    if (!titles || typeof titles.get !== "function") return null;
+    const sessions = safeService(ctx, "sessions");
+    const session = sessions && typeof sessions.get === "function" ? sessions.get(id) : id;
+    const value = titles.get(session);
+    if (typeof value === "string" && value.trim()) return value.trim();
+    if (value && typeof value.title === "string" && value.title.trim()) return value.title.trim();
+    if (value && typeof value.text === "string" && value.text.trim()) return value.text.trim();
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/** Newest-first ids from `.spike-output/sessions.jsonl` (ids only, no text). */
+function readSeenSessionIds(limit = 20) {
+  try {
+    const lines = readFileSync(SEEN_FILE, "utf8").trim().split("\n");
+    const ids = [];
+    const seen = new Set();
+    for (let i = lines.length - 1; i >= 0 && ids.length < limit; i--) {
+      try {
+        const row = JSON.parse(lines[i]);
+        const id = row && row.sessionId;
+        if (typeof id === "string" && id.length > 0 && !seen.has(id)) {
+          seen.add(id);
+          ids.push(id);
+        }
+      } catch {
+        // a torn line is not worth failing the whole list over
+      }
+    }
+    return ids;
+  } catch {
+    return [];
+  }
+}
+
+function safeService(ctx, name) {
+  try {
+    return typeof ctx.get === "function" ? ctx.get(name) : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function appendRecord(record, file = OUTPUT_FILE) {

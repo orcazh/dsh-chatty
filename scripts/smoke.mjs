@@ -37,13 +37,25 @@ globalThis.window = {
   },
 };
 
+// Tests that need to render a component in a NON-initial state seed the hook
+// values here (in `useState` call order). The setters stay no-ops: these tests
+// assert what a given state renders, not how it transitions.
+let stateSeed = null;
+
 const React = {
   useEffect() {},
   useRef(initial) {
     return { current: initial };
   },
   useState(initial) {
+    if (stateSeed && stateSeed.length) return [stateSeed.shift(), () => {}];
     return [typeof initial === "function" ? initial() : initial, () => {}];
+  },
+  createElement(type, props, ...children) {
+    const merged = { ...(props || {}) };
+    if (children.length === 1) merged.children = children[0];
+    else if (children.length > 1) merged.children = children;
+    return { type, props: merged };
   },
 };
 
@@ -80,13 +92,15 @@ function makeSlots() {
       entriesOfSlot() {
         return entries;
       },
-      inject(_name, generator) {
+      // Mirrors the documented contract:
+      //   inject(key, callback: () => SlotInjectionEffect): () => void
+      // The callback may return a disposer, or yield several (generator).
+      inject(_name, callback) {
         const collected = [];
-        const iterator = generator();
-        let step = iterator.next();
-        while (!step.done) {
-          collected.push(step.value);
-          step = iterator.next();
+        const result = callback();
+        if (typeof result === "function") collected.push(result);
+        else if (result && typeof result[Symbol.iterator] === "function") {
+          for (const item of result) if (typeof item === "function") collected.push(item);
         }
         return () => {
           for (const dispose of collected) if (typeof dispose === "function") dispose();
@@ -107,6 +121,9 @@ function makeSlots() {
 async function testClient(mode) {
   STORE.set("humanize.spike.mode", mode);
   delete globalThis.__loaded;
+  // The G3 bootstrap fetches the host config at load. Hold it pending so these
+  // renderer tests do not depend on the network (and so no retry ladder runs).
+  globalThis.fetch = () => new Promise(() => {});
 
   await import(pathToFileURL(join(ROOT, "spike-humanize/lib/client.js")).href + "?mode=" + mode);
 
@@ -130,10 +147,65 @@ async function testClient(mode) {
   };
 
   module.apply(ctx);
-  assert.equal(slots.entries.length, 1, "expected exactly one registration");
-  const entry = slots.entries[0];
+  const chatEntries = slots.entries.filter((e) => e.options.name === "conversation.chat.node");
+  assert.equal(chatEntries.length, 1, "expected exactly one chat node registration");
+  const entry = chatEntries[0];
   assert.equal(entry.options.key, "assistant-step");
   assert.equal(entry.options.name, "conversation.chat.node");
+
+  const settingsEntries = slots.entries.filter((e) => e.options.name === "settings.section");
+  assert.equal(settingsEntries.length, 1, "expected one settings page");
+  assert.equal(settingsEntries[0].options.id, "humanize");
+  assert.equal(settingsEntries[0].options.label(), "拟人化输出");
+  // G3: the page must render before the host answers (data is null on frame 1).
+  const blank = settingsEntries[0].component({ close() {} });
+  assert.equal(blank.props["data-hz-page"], "1");
+  assert.ok(
+    JSON.stringify(blank).includes("正在读取设置"),
+    "settings page must show a loading state before the host answers",
+  );
+
+  // G3: and it must survive the loaded state — the session rows, both sliders
+  // and the save row are a lot of DOM to throw an exception in.
+  stateSeed = [
+    {
+      ok: true,
+      config: {
+        scope: { mode: "allowlist", sessions: ["session-abc123"] },
+        reveal: { gap: 700, perChar: 9, buffer: true, motion: "auto" },
+      },
+      sessions: [
+        { id: "session-abc123", shortId: "abc123", title: "测试会话" },
+        { id: "session-def456", shortId: "def456", title: null },
+      ],
+      configFile: "C:/x/spike.config.json",
+    },
+    // draft, mirroring what `adopt()` would derive from the payload above
+    {
+      enabled: true,
+      sessions: ["session-abc123"],
+      gap: 700,
+      perChar: 9,
+      buffer: true,
+      motion: "auto",
+    },
+    null, // error
+    "", // note
+    false, // busy
+  ];
+  const loaded = settingsEntries[0].component({ close() {} });
+  stateSeed = null;
+
+  const loadedJson = JSON.stringify(loaded);
+  assert.equal(loaded.props["data-hz-page"], "1");
+  assert.ok(loadedJson.includes("测试会话"), "session titles must be listed");
+  assert.ok(loadedJson.includes("abc123"), "short ids must be listed");
+  assert.ok(
+    loadedJson.includes("（没有标题的会话）"),
+    "a session without a title must still be selectable",
+  );
+  assert.ok(loadedJson.includes("700ms") && loadedJson.includes("9ms"), "sliders must show the live values");
+  assert.ok(loadedJson.includes("保存"), "the save button must be present");
 
   if (mode === "bubbles") {
     // Primitive resolution must retry: at boot the module may not be
@@ -301,15 +373,23 @@ async function testClient(mode) {
 
   // Runtime mode switching must mount/unmount without a page reload.
   const spike = globalThis.window.__humanizeSpike;
+  const nodeCount = () =>
+    slots.entries.filter((e) => e.options.name === "conversation.chat.node").length;
   assert.equal(spike.mode, mode);
   spike.setMode("off");
-  assert.equal(slots.entries.length, 0, "setMode(off) must unregister");
+  assert.equal(nodeCount(), 0, "setMode(off) must unregister");
   assert.equal(spike.mode, "off");
+  // The settings page is independent of the chat mode and must survive it.
+  assert.equal(
+    slots.entries.filter((e) => e.options.name === "settings.section").length,
+    1,
+    "settings page must survive setMode",
+  );
   spike.setMode(mode);
-  assert.equal(slots.entries.length, 1, "setMode(" + mode + ") must re-register");
+  assert.equal(nodeCount(), 1, "setMode(" + mode + ") must re-register");
   assert.ok(spike.priority < 0, "shadowing priority must be negative");
 
-  console.log(`  client/${mode}: ok (registrations=${slots.entries.length})`);
+  console.log(`  client/${mode}: ok (chat nodes=${nodeCount()})`);
 }
 
 async function testHost() {
@@ -467,10 +547,60 @@ function fakeHostCtx(sections, listeners) {
   };
 }
 
+/**
+ * G3: the client must turn itself on from the host config, without anyone
+ * typing `scopedWatch(...)` in the console.
+ */
+async function testRemoteConfig() {
+  STORE.set("humanize.spike.mode", "off");
+  delete globalThis.__loaded;
+
+  const calls = [];
+  const hostConfig = {
+    scope: { mode: "allowlist", sessions: ["session-smoke-1"] },
+    reveal: { gap: 900, perChar: 8, buffer: true, motion: "auto" },
+  };
+  globalThis.fetch = (url, init) => {
+    calls.push({ url, init });
+    return Promise.resolve({
+      ok: true,
+      json: async () => ({ ok: true, config: hostConfig, sessions: [], configFile: "x.json" }),
+    });
+  };
+
+  await import(pathToFileURL(join(ROOT, "spike-humanize/lib/client.js")).href + "?remote=1");
+
+  const module = globalThis.__loaded.factory(fakeRequire);
+  const slots = makeSlots();
+  const ctx = {
+    slots: slots.api,
+    get(name) {
+      return name === "slots" ? slots.api : undefined;
+    },
+  };
+
+  module.apply(ctx);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  const api = globalThis.window.__humanizeSpike;
+  const diag = api.diag();
+  assert.equal(calls[0].url, "/dsh-humanize/state", "boot must read the host config");
+  assert.equal(api.mode, "off", "the root registration must stay off");
+  assert.equal(diag.bubbleGap, 900, "reveal.gap must come from the host config");
+  assert.equal(diag.perCharMs, 8, "reveal.perChar must come from the host config");
+  assert.equal(diag.hostLoaded, true, "host config must be marked loaded");
+  assert.deepEqual(api.scoped.watching, ["session-smoke-1"], "allowlist must arm the watcher");
+  assert.deepEqual(api.scoped.attached, [], "nothing is attached until that session is live");
+
+  api.scopedOff({ quiet: true });
+  console.log("  client/remote: ok (auto-enable from host config)");
+}
+
 console.log("[smoke] phase 0 probe");
 await testHost();
 await testClient("probe");
 await testClient("bubbles");
 await testClient("pass");
+await testRemoteConfig();
 console.log("[smoke] all checks passed");
 process.exit(0);
