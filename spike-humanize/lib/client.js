@@ -729,6 +729,14 @@
           textStats: function () {
             return summarize(listEntries(slots));
           },
+          // G7: register the bubbles view into ONE session's slot scope.
+          scopedTest: scopedTest,
+          // G7: undo it and restore the global (mode-driven) registration.
+          scopedOff: scopedOff,
+          // G7: what is currently scoped?
+          get scoped() {
+            return { sessionId: scoped.sessionId, active: !!scoped.dispose };
+          },
           // G1b: is a reusable Markdown renderer reachable from a plugin?
           mods: function (name) {
             var names = name
@@ -844,6 +852,132 @@
         if (mode === "bubbles") return "BubbleView";
         if (mode === "pass") return "PassView";
         return "ProbeView";
+      }
+
+      // --- G7 probe: session-scoped registration ----------------------------
+      // `conversation.chat.node` is declared with `scope: "session"`, i.e. the
+      // slot has one instance per session. If a session's AgentContext exposes
+      // `slots`, registering there should affect that session only — no global
+      // shadowing, no unregister flicker, no self-drawn fallback.
+      //
+      // That is the hypothesis this probe tests. Everything is reversible with
+      // `scopedOff()`.
+      var scoped = { dispose: null, sessionId: null, slotService: null };
+
+      function sessionIds() {
+        try {
+          var svc = ctx.get("sessions");
+          var list = svc && svc.list;
+          var snap = list && typeof list.get === "function" ? list.get() : list;
+          return snap && Array.isArray(snap.ids) ? snap.ids : [];
+        } catch {
+          return [];
+        }
+      }
+
+      function errText(error) {
+        return String((error && error.message) || error);
+      }
+
+      function scopedTest(sessionId) {
+        var out = { ts: new Date().toISOString() };
+
+        var svc = null;
+        try {
+          svc = ctx.get("sessions");
+        } catch (error) {
+          out.sessionsError = errText(error);
+        }
+        out.sessionsAvailable = !!svc;
+        if (!svc) return logOut(out);
+
+        out.knownIds = sessionIds().slice(0, 10);
+
+        var id = sessionId || out.knownIds[out.knownIds.length - 1];
+        out.target = id || null;
+        if (!id) {
+          out.hint = "pass a session id: __humanizeSpike.scopedTest('session-...')";
+          return logOut(out);
+        }
+
+        var agent;
+        try {
+          agent = svc.scope(id);
+        } catch (error) {
+          out.scopeError = errText(error);
+        }
+        out.agentFound = !!agent;
+        if (!agent) {
+          out.hint = "sessions.scope() returned nothing — open that session first";
+          return logOut(out);
+        }
+
+        try {
+          out.agentKeys = Object.keys(agent).slice(0, 40);
+        } catch {
+          out.agentKeys = null;
+        }
+
+        var sessionSlots;
+        try {
+          sessionSlots = typeof agent.get === "function" ? agent.get("slots") : agent.slots;
+        } catch (error) {
+          out.slotsError = errText(error);
+        }
+        out.slotsFound = !!sessionSlots;
+        out.sameSlotServiceAsRoot = sessionSlots === slots;
+        if (!sessionSlots) return logOut(out);
+
+        scopedOff({ quiet: true });
+
+        // Force the bubbles view even when the global mode is "off": this probe
+        // is about WHERE the registration lands, not about which view it is.
+        var previousMode = mode;
+        mode = "bubbles";
+        try {
+          var handle = registerView(sessionSlots, used);
+          if (handle) {
+            scoped.dispose = handle;
+            scoped.sessionId = id;
+            scoped.slotService = sessionSlots;
+            out.ok = true;
+            out.priority = used.priority;
+          } else {
+            out.ok = false;
+            out.reason = "registerView returned null (no free priority)";
+          }
+        } catch (error) {
+          out.ok = false;
+          out.registerError = errText(error);
+        } finally {
+          mode = previousMode;
+        }
+
+        return logOut(out);
+      }
+
+      function scopedOff(options) {
+        var had = !!scoped.dispose;
+        if (scoped.dispose) {
+          try {
+            scoped.dispose();
+          } catch (error) {
+            console.warn("[spike-humanize] scoped dispose failed: " + errText(error));
+          }
+        }
+        scoped.dispose = null;
+        scoped.sessionId = null;
+        scoped.slotService = null;
+        used.priority = null;
+        if (!options || !options.quiet) mount();
+        var out = { hadScoped: had, mode: mode };
+        if (!options || !options.quiet) logOut(out);
+        return out;
+      }
+
+      function logOut(out) {
+        console.log("[spike-humanize] " + safeJson(out));
+        return out;
       }
 
 
