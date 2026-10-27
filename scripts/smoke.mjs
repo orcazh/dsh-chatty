@@ -135,6 +135,39 @@ async function testClient(mode) {
   assert.deepEqual(module.inject, ["slots"]);
 
   const slots = makeSlots();
+  // The settings page reads the live session catalog from the client `sessions`
+  // service. Tests swap `catalog` to control what it sees.
+  let catalog = null;
+  const liveCatalog = {
+    list: {
+      getSnapshot: () => ({
+        ids: ["session-live1", "session-live2", "session-child"],
+        phase: "ready",
+        byId: {
+          "session-live1": {
+            id: "session-live1",
+            displayTitle: "连接我的微信",
+            updatedAt: 300,
+            retainedBy: { mainView: 1 },
+          },
+          "session-live2": {
+            id: "session-live2",
+            displayTitle: "QQ 聊天",
+            updatedAt: 200,
+            retainedBy: { mainView: 0 },
+          },
+          "session-child": {
+            id: "session-child",
+            displayTitle: "子代理任务",
+            updatedAt: 100,
+            parentId: "session-live1",
+            origin: "subagent",
+            retainedBy: { mainView: 0 },
+          },
+        },
+      }),
+    },
+  };
   const ctx = {
     slots: Object.assign(slots.api, {
       entriesOfSlot: slots.api.entriesOfSlot,
@@ -142,7 +175,9 @@ async function testClient(mode) {
       register: slots.api.register,
     }),
     get(name) {
-      return name === "slots" ? this.slots : undefined;
+      if (name === "slots") return this.slots;
+      if (name === "sessions") return catalog;
+      return undefined;
     },
   };
 
@@ -201,11 +236,42 @@ async function testClient(mode) {
   assert.ok(loadedJson.includes("测试会话"), "session titles must be listed");
   assert.ok(loadedJson.includes("abc123"), "short ids must be listed");
   assert.ok(
-    loadedJson.includes("（没有标题的会话）"),
+    loadedJson.includes("未命名会话"),
     "a session without a title must still be selectable",
   );
   assert.ok(loadedJson.includes("700ms") && loadedJson.includes("9ms"), "sliders must show the live values");
   assert.ok(loadedJson.includes("保存"), "the save button must be present");
+
+  // The live client catalog wins over the host list: it is what the sidebar
+  // shows, it has real titles, and subagent children must not be offered.
+  catalog = liveCatalog;
+  stateSeed = [
+    {
+      ok: true,
+      config: {
+        scope: { mode: "allowlist", sessions: ["session-live1"] },
+        reveal: { gap: 450, perChar: 6, buffer: true, motion: "auto" },
+      },
+      // Deliberately a junk host list: the page must ignore it while the live
+      // catalog has entries (this is the "20 untitled sessions" regression).
+      sessions: [{ id: "session-gone", shortId: "e-gone", title: null }],
+      configFile: "C:/x/spike.config.json",
+    },
+    { enabled: true, sessions: ["session-live1"], gap: 450, perChar: 6, buffer: true, motion: "auto" },
+    null,
+    "",
+    false,
+  ];
+  const live = settingsEntries[0].component({ close() {} });
+  stateSeed = null;
+  catalog = null;
+
+  const liveJson = JSON.stringify(live);
+  assert.ok(liveJson.includes("连接我的微信"), "titles must come from the live catalog");
+  assert.ok(liveJson.includes("QQ 聊天"), "every real session must be listed");
+  assert.ok(!liveJson.includes("子代理任务"), "subagent children must be filtered out");
+  assert.ok(!liveJson.includes("session-gone"), "the host fallback must not be used when live data exists");
+  assert.ok(liveJson.includes("· 当前"), "the session DSH is showing must be marked as current");
 
   if (mode === "bubbles") {
     // Primitive resolution must retry: at boot the module may not be

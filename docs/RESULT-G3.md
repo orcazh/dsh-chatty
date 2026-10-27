@@ -91,9 +91,45 @@ declaredBy: an entry in 'sidebar.settings' (client-ui-settings-general)
 
 1. 「在选定会话当中生效」开关 → `scope.mode = allowlist | off`
 2. 会话勾选列表（标题 + 短 id，当前会话标「当前」）
-3. 两个滑杆：基础停顿 `reveal.gap`、每字追加 `reveal.perChar`
+3. 两个滑杆：固定停顿 `reveal.gap`、每多一个字 `reveal.perChar`（卡片标题「消息出现的快慢」）
 4. 保存 → 写宿主 → **立刻应用到正在运行的客户端**（同一个 JS 上下文，
    不需要轮询、不需要刷新）
+
+### 会话列表从哪来（实机反馈后修正）
+
+第一版设置页列了 20 多个「没有标题的会话」，而用户实际只有 3 个会话。
+根因在**宿主的兜底**：`sessions.list()` 太薄时会去读
+`.spike-output/sessions.jsonl`——那是探针历史上见过的所有 id 的追加日志，
+早就删掉的会话也在里面，而且都没有标题。
+
+现在改成：**优先读客户端 `sessions.list` 快照**（设置页和侧栏在同一个 JS 上下文）。
+
+```js
+sessions.list.getSnapshot()   // { ids, byId, phase }
+byId[id] = {
+  id, displayTitle,            // ⭐ 侧栏显示的就是这个
+  running, retainedBy: { mainView },   // mainView > 0 = 用户正在看的那个会话
+  blank, updatedAt,
+  parentId, origin: "subagent",        // ⭐ 用它过滤子代理
+}
+```
+
+- 过滤 `parentId` / `origin === "subagent"` —— 子代理不是给人勾的会话
+- 标题直接用 `displayTitle`（`title` 可能没有，`displayTitle` 一定有）
+- 「· 当前」用 `retainedBy.mainView > 0` 判定（和 `ui-session` 的 `isMain()` 一致），
+  不再依赖「我们的视图渲染过才记得住」
+- 按 `updatedAt` 倒序
+
+宿主那份列表降级为**兜底**：只查 `sessions.list()`，去掉 jsonl 兜底，
+并且跳过带 `parentId` 的行。顺便修了 `list.getSnapshot()` 的调用
+（之前查的是 `.get()`，永远返回 `undefined`，所以 `sessionIds()` 一直是空的）。
+
+同一会话可能以 `session-<uuid>` 和 `<uuid>` 两种写法出现（speak-up 踩过），
+两处都按「去掉 `session-` 前缀」去重，避免勾选框显示未勾却计数。
+
+已知限制：客户端的会话清单是 manager 的全局目录，行里不带 `workspaceId`，
+所以无法按工作区分组（单工作区部署无影响）。将来要按工作区过滤，
+需要接 `workspaceRegistry`，或者在宿主侧补一个字段。
 
 ---
 

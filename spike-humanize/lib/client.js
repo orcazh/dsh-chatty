@@ -1354,15 +1354,57 @@
         return out;
       }
 
-      function sessionIds() {
+      /**
+       * The client session catalog — the same snapshot the sidebar renders.
+       * It carries `displayTitle` (the title DSH derived) and `parentId`
+       * (subagent children), neither of which the host-side list has.
+       */
+      function sessionCatalog() {
         try {
           var svc = rootCtx && rootCtx.get("sessions");
-          var list = svc && svc.list;
-          var snap = list && typeof list.get === "function" ? list.get() : list;
-          return snap && Array.isArray(snap.ids) ? snap.ids : [];
+          var source = svc && svc.list;
+          if (!source) return null;
+          if (typeof source.getSnapshot === "function") return source.getSnapshot();
+          if (typeof source.get === "function") return source.get();
+          return null;
         } catch {
-          return [];
+          return null;
         }
+      }
+
+      function sessionIds() {
+        var snap = sessionCatalog();
+        return snap && Array.isArray(snap.ids) ? snap.ids : [];
+      }
+
+      /**
+       * Sessions worth offering in the settings page: exactly the ones the
+       * sidebar shows, with their real titles. Subagent children are filtered
+       * out — nobody picks a subagent conversation to humanize.
+       */
+      function liveSessions() {
+        var snap = sessionCatalog();
+        var byId = snap && snap.byId;
+        if (!byId) return [];
+
+        var rows = [];
+        Object.keys(byId).forEach(function (id) {
+          var row = byId[id];
+          if (!row) return;
+          if (row.parentId || row.parentSessionId || row.origin === "subagent") return;
+          var title = row.displayTitle || row.title || row.name || null;
+          rows.push({
+            id: id,
+            shortId: id.slice(-6),
+            title: typeof title === "string" && title.trim() ? title.trim() : null,
+            updatedAt: Number(row.updatedAt) || 0,
+            current: !!(row.retainedBy && row.retainedBy.mainView > 0),
+          });
+        });
+        rows.sort(function (a, b) {
+          return b.updatedAt - a.updatedAt;
+        });
+        return rows;
       }
 
       /** `{ agent, slots }` for a live session scope, or null when not mounted. */
@@ -1689,9 +1731,11 @@
             "[data-hz-row] input[type=range]{flex:1;min-width:120px}" +
             "[data-hz-num]{width:64px;text-align:right;font-variant-numeric:tabular-nums}" +
             "[data-hz-session]{display:flex;align-items:center;gap:8px;padding:3px 0}" +
-            "[data-hz-actions]{display:flex;align-items:center;gap:12px;margin-top:12px}" +
-            "[data-hz-save]{padding:5px 14px;border-radius:8px;border:1px solid var(--dsw-alias-border-l1,rgba(0,0,0,.12));background:var(--dsw-alias-bg-layer-1,rgba(255,255,255,.9));cursor:pointer}" +
+            "[data-hz-session]>span:first-of-type{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}" +
+            "[data-hz-actions]{display:flex;align-items:center;gap:12px;margin-top:12px;flex-wrap:wrap}" +
+            "[data-hz-save]{padding:5px 14px;border-radius:8px;border:1px solid var(--dsw-alias-border-l1,rgba(0,0,0,.12));background:var(--dsw-alias-bg-layer-1,rgba(255,255,255,.9));cursor:pointer;white-space:nowrap;flex:0 0 auto}" +
             "[data-hz-save][disabled]{opacity:.5;cursor:default}" +
+            "[data-hz-note]{flex:1 1 auto;min-width:0}" +
             "[data-hz-err]{color:#c0392b}";
           document.head.appendChild(style);
         } catch {
@@ -1864,7 +1908,11 @@
 
         // --- session checklist --------------------------------------------
         if (draft.enabled) {
-          var sessions = (data && data.sessions) || [];
+          // Prefer the live client catalog: it is what the sidebar shows and it
+          // carries real titles. The host list is only a fallback (it cannot see
+          // `displayTitle`, so its rows often have no title at all).
+          var sessions = liveSessions();
+          if (!sessions.length) sessions = (data && data.sessions) || [];
           var rows = [];
 
           if (!sessions.length) {
@@ -1891,9 +1939,9 @@
                       toggleSession(row.id);
                     },
                   }),
-                  h("span", { children: row.title || "（没有标题的会话）" }),
+                  h("span", { children: row.title || "未命名会话" }),
                   h("span", { "data-hz-dim": "1", children: "…" + row.shortId }),
-                  row.id === lastSessionId
+                  row.current || row.id === lastSessionId
                     ? h("span", { "data-hz-dim": "1", children: "· 当前" })
                     : null,
                 ),
@@ -1924,11 +1972,16 @@
           h(
             "div",
             { key: "cadence", "data-hz-card": "1" },
-            h("h3", { children: "出条速度" }),
+            h("h3", { children: "消息出现的快慢" }),
+            h(
+              "div",
+              { "data-hz-dim": "1" },
+              "往右拖 = 每条消息之间等得更久，更像人在一边想一边打字；往左拖 = 更快接上。",
+            ),
             h(
               "div",
               { "data-hz-row": "1" },
-              h("span", { style: { minWidth: 88 }, children: "基础停顿" }),
+              h("span", { style: { minWidth: 88 }, children: "固定停顿" }),
               h("input", {
                 type: "range",
                 min: "0",
@@ -1944,7 +1997,7 @@
             h(
               "div",
               { "data-hz-row": "1" },
-              h("span", { style: { minWidth: 88 }, children: "每字追加" }),
+              h("span", { style: { minWidth: 88 }, children: "每多一个字" }),
               h("input", {
                 type: "range",
                 min: "0",
@@ -1960,8 +2013,8 @@
             h(
               "div",
               { "data-hz-dim": "1" },
-              "下一条气泡的等待时间 = 基础停顿 + 它自己的字数 × 每字追加（400–1200ms 之间）。" +
-                "当前一条 60 字的消息约等 " +
+              "下一条要等：固定停顿 + 它自己的字数 × 每多一个字（最短 400ms、最长 1200ms）。" +
+                "按当前设置，一条 60 字的消息大约等 " +
                 String(Math.min(1200, Math.max(400, Number(draft.gap) + Number(draft.perChar) * 60))) +
                 "ms。",
             ),
@@ -1983,10 +2036,7 @@
               },
               busy ? "保存中…" : "保存",
             ),
-            note ? h("span", { "data-hz-dim": "1", children: note }) : null,
-            data && data.configFile
-              ? h("span", { "data-hz-dim": "1", children: "配置：" + data.configFile })
-              : null,
+            note ? h("span", { "data-hz-note": "1", "data-hz-dim": "1", children: note }) : null,
           ),
         );
 

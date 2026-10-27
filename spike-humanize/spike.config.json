@@ -7,12 +7,13 @@
   "scope": {
     "mode": "allowlist",
     "sessions": [
-      "session-c654d4f4-6304-49fe-addb-49cc1b38eaee"
+      "session-c654d4f4-6304-49fe-addb-49cc1b38eaee",
+      "smoke-1793100718508"
     ]
   },
   "reveal": {
-    "gap": 450,
-    "perChar": 6,
+    "gap": 0,
+    "perChar": 0,
     "buffer": true,
     "motion": "auto"
   }

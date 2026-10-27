@@ -413,20 +413,40 @@ function installConfigRoutes(ctx, config, log, warn) {
   log("config routes ready: /dsh-humanize/state, /dsh-humanize/save");
 }
 
-/** Sessions the settings page can offer, most useful first. */
+/**
+ * Sessions the settings page can offer, as a FALLBACK only.
+ *
+ * The settings page prefers the live client catalog (`sessions.list` snapshot),
+ * which is exactly what the sidebar shows and carries real titles. This host
+ * list exists for the case where that catalog is unavailable.
+ *
+ * Deliberately no `.spike-output/sessions.jsonl` fallback: that log is
+ * append-only, so it accumulates every session the probe ever saw — including
+ * ones deleted long ago — and none of them have titles. It produced a settings
+ * page full of "没有标题的会话".
+ */
 function listSessions(ctx) {
   const out = [];
   const seen = new Set();
 
-  const push = (id) => {
+  const push = (row) => {
+    const id = typeof row === "string" ? row : row && (row.id ?? row.sessionId);
     if (typeof id !== "string" || id.length === 0) return;
     // The same session can show up as `session-<uuid>` (sessions.list()) and as
     // bare `<uuid>` (agents.list()). Dedupe on the prefix-stripped key but keep
     // the original spelling, so a checkbox can never be listed twice.
     const key = id.startsWith("session-") ? id.slice("session-".length) : id;
     if (seen.has(key)) return;
+    // Subagent sessions are not conversations a user picks.
+    if (row && typeof row === "object" && (row.parentId || row.parentSessionId)) return;
     seen.add(key);
-    out.push({ id, shortId: id.slice(-6), title: sessionTitleOf(ctx, id) });
+    const rowTitle =
+      row && typeof row === "object" ? (row.displayTitle || row.title || row.name) : null;
+    out.push({
+      id,
+      shortId: id.slice(-6),
+      title: typeof rowTitle === "string" && rowTitle.trim() ? rowTitle.trim() : sessionTitleOf(ctx, id),
+    });
   };
 
   const sessions = safeService(ctx, "sessions");
@@ -437,14 +457,8 @@ function listSessions(ctx) {
     rows = [];
   }
   if (Array.isArray(rows)) {
-    for (const row of rows) {
-      push(typeof row === "string" ? row : row && (row.id ?? row.sessionId));
-    }
+    for (const row of rows) push(row);
   }
-
-  // Before a session has been opened in this run, `sessions.list()` is thin.
-  // Fall back to the ids the probe has already seen in prompt assembly.
-  for (const id of readSeenSessionIds()) push(id);
 
   return out.slice(0, 60);
 }
@@ -462,30 +476,6 @@ function sessionTitleOf(ctx, id) {
     return null;
   } catch {
     return null;
-  }
-}
-
-/** Newest-first ids from `.spike-output/sessions.jsonl` (ids only, no text). */
-function readSeenSessionIds(limit = 20) {
-  try {
-    const lines = readFileSync(SEEN_FILE, "utf8").trim().split("\n");
-    const ids = [];
-    const seen = new Set();
-    for (let i = lines.length - 1; i >= 0 && ids.length < limit; i--) {
-      try {
-        const row = JSON.parse(lines[i]);
-        const id = row && row.sessionId;
-        if (typeof id === "string" && id.length > 0 && !seen.has(id)) {
-          seen.add(id);
-          ids.push(id);
-        }
-      } catch {
-        // a torn line is not worth failing the whole list over
-      }
-    }
-    return ids;
-  } catch {
-    return [];
   }
 }
 
