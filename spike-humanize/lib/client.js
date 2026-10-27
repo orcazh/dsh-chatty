@@ -747,11 +747,18 @@
           },
           // G7: register the bubbles view into ONE session's slot scope.
           scopedTest: scopedTest,
-          // G7: undo it and restore the global (mode-driven) registration.
+          // G7: keep it alive across conversation switches.
+          scopedWatch: scopedWatch,
+          // G7: undo everything and restore the global (mode-driven) registration.
           scopedOff: scopedOff,
           // G7: what is currently scoped?
           get scoped() {
-            return { sessionId: scoped.sessionId, active: !!scoped.dispose };
+            return {
+              sessionId: scoped.sessionId,
+              active: !!scoped.dispose,
+              watching: !!scoped.timer,
+              attaches: scoped.attaches,
+            };
           },
           // G1b: is a reusable Markdown renderer reachable from a plugin?
           mods: function (name) {
@@ -872,13 +879,32 @@
 
       // --- G7 probe: session-scoped registration ----------------------------
       // `conversation.chat.node` is declared with `scope: "session"`, i.e. the
-      // slot has one instance per session. If a session's AgentContext exposes
-      // `slots`, registering there should affect that session only — no global
-      // shadowing, no unregister flicker, no self-drawn fallback.
+      // slot has one instance per session, and `sessions.scope(id).get("slots")`
+      // hands back that instance (verified: it is NOT the root slot service).
+      // Registering there shadows the native renderer for that session only —
+      // other sessions are never touched.
       //
-      // That is the hypothesis this probe tests. Everything is reversible with
-      // `scopedOff()`.
-      var scoped = { dispose: null, sessionId: null, slotService: null };
+      // Catch: the session scope is created when the conversation mounts and
+      // disposed when it unmounts, so the registration dies on every switch
+      // away. `sessions.retain()` is not open to plugins (its `source` union
+      // only allows controllerOperation | gateway), so the only way to survive
+      // a switch is to re-attach whenever the scope reappears.
+      var scoped = {
+        sessionId: null,
+        timer: null,
+        dispose: null,
+        slotService: null,
+        attaches: 0,
+      };
+
+      function errText(error) {
+        return String((error && error.message) || error);
+      }
+
+      function logOut(out) {
+        console.log("[spike-humanize] " + safeJson(out));
+        return out;
+      }
 
       function sessionIds() {
         try {
@@ -891,8 +917,72 @@
         }
       }
 
-      function errText(error) {
-        return String((error && error.message) || error);
+      /** `{ agent, slots }` for a live session scope, or null when not mounted. */
+      function sessionScopeOf(id) {
+        if (!rootCtx || !id) return null;
+        var svc;
+        try {
+          svc = rootCtx.get("sessions");
+        } catch {
+          return null;
+        }
+        if (!svc) return null;
+
+        var agent;
+        try {
+          agent = svc.scope(id);
+        } catch {
+          return null;
+        }
+        if (!agent) return null;
+
+        var slots2;
+        try {
+          slots2 = typeof agent.get === "function" ? agent.get("slots") : agent.slots;
+        } catch {
+          return null;
+        }
+        return slots2 ? { agent: agent, slots: slots2 } : null;
+      }
+
+      function detachScoped() {
+        if (scoped.dispose) {
+          try {
+            scoped.dispose();
+          } catch (error) {
+            console.warn("[spike-humanize] scoped dispose failed: " + errText(error));
+          }
+        }
+        scoped.dispose = null;
+        scoped.slotService = null;
+        if (rootUsed) rootUsed.priority = null;
+      }
+
+      /**
+       * One attach attempt. Idempotent: stays attached while the same scope is
+       * alive, re-attaches when the scope was recreated (identity changes).
+       */
+      function attachScoped(id) {
+        var found = sessionScopeOf(id);
+        if (!found) return false;
+        if (scoped.dispose && scoped.slotService === found.slots) return true;
+
+        detachScoped();
+        var previousMode = mode;
+        mode = "bubbles";
+        try {
+          var handle = registerView(found.slots, rootUsed);
+          if (!handle) return false;
+          scoped.dispose = handle;
+          scoped.slotService = found.slots;
+          scoped.attaches += 1;
+          return true;
+        } catch (error) {
+          console.warn("[spike-humanize] scoped register failed: " + errText(error));
+          return false;
+        } finally {
+          mode = previousMode;
+        }
       }
 
       function scopedTest(sessionId) {
@@ -903,17 +993,7 @@
           return logOut(out);
         }
 
-        var svc = null;
-        try {
-          svc = rootCtx.get("sessions");
-        } catch (error) {
-          out.sessionsError = errText(error);
-        }
-        out.sessionsAvailable = !!svc;
-        if (!svc) return logOut(out);
-
         out.knownIds = sessionIds().slice(0, 10);
-
         var id = sessionId || out.knownIds[out.knownIds.length - 1];
         out.target = id || null;
         if (!id) {
@@ -921,87 +1001,71 @@
           return logOut(out);
         }
 
-        var agent;
-        try {
-          agent = svc.scope(id);
-        } catch (error) {
-          out.scopeError = errText(error);
-        }
-        out.agentFound = !!agent;
-        if (!agent) {
+        var found = sessionScopeOf(id);
+        out.agentFound = !!found;
+        if (!found) {
           out.hint = "sessions.scope() returned nothing — open that session first";
           return logOut(out);
         }
+        out.sameSlotServiceAsRoot = found.slots === rootSlots;
 
-        try {
-          out.agentKeys = Object.keys(agent).slice(0, 40);
-        } catch {
-          out.agentKeys = null;
-        }
-
-        var sessionSlots;
-        try {
-          sessionSlots = typeof agent.get === "function" ? agent.get("slots") : agent.slots;
-        } catch (error) {
-          out.slotsError = errText(error);
-        }
-        out.slotsFound = !!sessionSlots;
-        out.sameSlotServiceAsRoot = sessionSlots === rootSlots;
-        if (!sessionSlots) return logOut(out);
-
-        scopedOff({ quiet: true });
-        // Also drop the global registration so the test has exactly one source.
         if (rootUnmount) rootUnmount();
+        detachScoped();
 
-        // Force the bubbles view even when the global mode is "off": this probe
-        // is about WHERE the registration lands, not about which view it is.
-        var previousMode = mode;
-        mode = "bubbles";
-        try {
-          var handle = registerView(sessionSlots, rootUsed);
-          if (handle) {
-            scoped.dispose = handle;
-            scoped.sessionId = id;
-            scoped.slotService = sessionSlots;
-            out.ok = true;
-            out.priority = rootUsed.priority;
-          } else {
-            out.ok = false;
-            out.reason = "registerView returned null (no free priority)";
-          }
-        } catch (error) {
-          out.ok = false;
-          out.registerError = errText(error);
-        } finally {
-          mode = previousMode;
+        out.ok = attachScoped(id);
+        out.priority = rootUsed ? rootUsed.priority : null;
+        return logOut(out);
+      }
+
+      /**
+       * Keep the scoped registration alive across conversation switches.
+       * The session scope is torn down on every switch away, so this polls for
+       * its return and re-attaches. (A proper event hook would be better; the
+       * client-side sessions service exposes no scope-lifecycle signal.)
+       */
+      function scopedWatch(sessionId) {
+        var out = { ts: new Date().toISOString() };
+
+        if (!rootCtx) {
+          out.error = "plugin context not ready yet";
+          return logOut(out);
+        }
+        if (sessionId) scoped.sessionId = sessionId;
+        out.sessionId = scoped.sessionId || null;
+        if (!scoped.sessionId) {
+          out.hint = "pass a session id: __humanizeSpike.scopedWatch('session-...')";
+          return logOut(out);
         }
 
+        if (rootUnmount) rootUnmount();
+        detachScoped();
+
+        if (scoped.timer) clearInterval(scoped.timer);
+        scoped.attaches = 0;
+        scoped.timer = setInterval(function () {
+          attachScoped(scoped.sessionId);
+        }, 250);
+
+        out.ok = attachScoped(scoped.sessionId);
+        out.priority = rootUsed ? rootUsed.priority : null;
+        out.watching = true;
+        out.pollMs = 250;
         return logOut(out);
       }
 
       function scopedOff(options) {
-        var had = !!scoped.dispose;
-        if (scoped.dispose) {
-          try {
-            scoped.dispose();
-          } catch (error) {
-            console.warn("[spike-humanize] scoped dispose failed: " + errText(error));
-          }
+        if (scoped.timer) {
+          clearInterval(scoped.timer);
+          scoped.timer = null;
         }
-        scoped.dispose = null;
+        var had = !!scoped.dispose;
+        detachScoped();
         scoped.sessionId = null;
-        scoped.slotService = null;
-        if (rootUsed) rootUsed.priority = null;
         if (!options || !options.quiet) {
           if (rootMount) rootMount();
         }
         var out = { hadScoped: had, mode: mode };
         if (!options || !options.quiet) logOut(out);
-        return out;
-      }
-
-      function logOut(out) {
-        console.log("[spike-humanize] " + safeJson(out));
         return out;
       }
 
