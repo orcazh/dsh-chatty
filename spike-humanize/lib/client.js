@@ -630,9 +630,12 @@
         }
 
         // Still generating: show placeholder dots instead of growing text.
-        // Only in the answer half — the reasoning fold has its own "思考中…".
-        if (streaming && bufferStreaming && props.groupPart !== "reasoning") {
-          children.push(typingNode());
+        // Same dots also sit between revealed bubbles, like someone typing the
+        // next message — a bare pause reads as "finished", not "still going".
+        // Only in the answer half; the reasoning fold has its own "思考中…".
+        if (props.groupPart !== "reasoning") {
+          if (streaming && bufferStreaming) children.push(typingNode());
+          else if (shouldAnimate && shown < total) children.push(typingNode());
         }
 
         if (!children.length) return null;
