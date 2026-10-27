@@ -403,6 +403,27 @@
           textStats: function () {
             return summarize(listEntries(slots));
           },
+          // G1b: is a reusable Markdown renderer reachable from a plugin?
+          mods: function (name) {
+            var names = name
+              ? [name]
+              : [
+                  "@deepseek-ai/dsh-client-ui-chat",
+                  "@deepseek-ai/dsh-client-ui-primitives",
+                  "@deepseek-ai/dsh-client-ui-slots",
+                ];
+            var out = {};
+            names.forEach(function (id) {
+              try {
+                var loaded = require(id);
+                out[id] = Object.keys(loaded).slice(0, 300);
+              } catch (error) {
+                out[id] = "ERROR: " + String((error && error.message) || error);
+              }
+            });
+            console.log("[spike-humanize] modules " + safeJson(out));
+            return out;
+          },
         };
 
         if (mode === "off") {
