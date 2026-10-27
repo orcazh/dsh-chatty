@@ -61,13 +61,24 @@ function makeSlots() {
         return entries;
       },
       inject(_name, generator) {
+        const collected = [];
         const iterator = generator();
         let step = iterator.next();
-        while (!step.done) step = iterator.next();
+        while (!step.done) {
+          collected.push(step.value);
+          step = iterator.next();
+        }
+        return () => {
+          for (const dispose of collected) if (typeof dispose === "function") dispose();
+        };
       },
       register(options, component) {
-        entries.push({ options, component, registrant: "smoke" });
-        return () => {};
+        const entry = { options, component, registrant: "smoke" };
+        entries.push(entry);
+        return () => {
+          const index = entries.indexOf(entry);
+          if (index >= 0) entries.splice(index, 1);
+        };
       },
     },
   };
@@ -124,6 +135,16 @@ async function testClient(mode) {
   if (mode === "shadow") {
     assert.ok(rendered.includes("隐藏了 1 个非文本 block"), "shadow view did not warn about non-text blocks");
   }
+
+  // Runtime mode switching must mount/unmount without a page reload.
+  const spike = globalThis.window.__humanizeSpike;
+  assert.equal(spike.mode, mode);
+  spike.setMode("off");
+  assert.equal(slots.entries.length, 0, "setMode(off) must unregister");
+  assert.equal(spike.mode, "off");
+  spike.setMode(mode);
+  assert.equal(slots.entries.length, 1, "setMode(" + mode + ") must re-register");
+  assert.ok(spike.priority < 0, "shadowing priority must be negative");
 
   console.log(`  client/${mode}: ok (registrations=${slots.entries.length})`);
 }

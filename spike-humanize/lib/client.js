@@ -300,9 +300,11 @@
         return out;
       }
 
+      // Returns `{ dispose }` on success or `{ error }` on failure. The probe
+      // re-registers at runtime, so we must be able to undo a registration.
       function tryRegister(slots, prio, View) {
         try {
-          slots.inject("conversation.chat.node", function* () {
+          var dispose = slots.inject("conversation.chat.node", function* () {
             yield slots.register(
               {
                 name: "conversation.chat.node",
@@ -312,9 +314,9 @@
               View,
             );
           });
-          return null;
+          return { dispose: dispose };
         } catch (error) {
-          return error;
+          return { error: error };
         }
       }
 
@@ -332,9 +334,45 @@
         else console.warn("[spike-humanize] no slot entries visible yet");
 
         var used = { priority: null };
+        var disposers = [];
+
+        function unmount() {
+          disposers.forEach(function (dispose) {
+            try {
+              if (typeof dispose === "function") dispose();
+            } catch (error) {
+              console.warn("[spike-humanize] dispose failed: " + String(error && error.message));
+            }
+          });
+          disposers = [];
+          used.priority = null;
+        }
+
+        function mount() {
+          if (mode === "off") return;
+          var handle = registerView(slots, used);
+          if (handle) disposers.push(handle);
+        }
+
+        function switchMode(next) {
+          if (next !== "off" && next !== "probe" && next !== "shadow") {
+            console.warn("[spike-humanize] unknown mode " + JSON.stringify(next));
+            return mode;
+          }
+          unmount();
+          mode = next;
+          window.localStorage.setItem(MODE_KEY, next);
+          mount();
+          console.log(
+            "[spike-humanize] mode -> " + next + (used.priority === null ? "" : " (live, priority " + used.priority + ")"),
+          );
+          return mode;
+        }
 
         window.__humanizeSpike = {
-          mode: mode,
+          get mode() {
+            return mode;
+          },
           get priority() {
             return used.priority;
           },
@@ -348,18 +386,19 @@
             console.table(rows);
             return rows;
           },
-          setMode: function (next) {
-            window.localStorage.setItem(MODE_KEY, next);
-            console.log("[spike-humanize] mode -> " + next + "; reload the window to apply");
-          },
+          setMode: switchMode,
           setPriority: function (next) {
+            priority = Number(next);
             window.localStorage.setItem(PRIORITY_KEY, String(next));
-            console.log("[spike-humanize] priority -> " + next + "; reload the window to apply");
+            if (mode !== "off") switchMode(mode);
+            console.log("[spike-humanize] priority -> " + priority);
           },
           reset: function () {
             window.localStorage.removeItem(MODE_KEY);
             window.localStorage.removeItem(PRIORITY_KEY);
-            console.log("[spike-humanize] settings cleared; reload the window to apply");
+            switchMode("off");
+            priority = -100;
+            console.log("[spike-humanize] settings cleared; mode=off");
           },
           textStats: function () {
             return summarize(listEntries(slots));
@@ -369,7 +408,7 @@
         if (mode === "off") {
           console.log("[spike-humanize] mode=off; native renderer kept");
         } else {
-          registerView(slots, used);
+          mount();
         }
 
         // G6: dump the sessions service once the app has settled, so it can be
@@ -415,21 +454,27 @@
           }),
         );
 
+        var mounted = null;
+
         for (var i = 0; i < attempts.length; i++) {
-          var error = tryRegister(slots, attempts[i], View);
-          if (error === null) {
+          var result = tryRegister(slots, attempts[i], View);
+          if (!result.error) {
             used.priority = attempts[i];
+            mounted = result.dispose;
             break;
           }
           console.warn(
-            "[spike-humanize] priority " + attempts[i] + " rejected: " + String(error.message || error),
+            "[spike-humanize] priority " +
+              attempts[i] +
+              " rejected: " +
+              String((result.error && result.error.message) || result.error),
           );
-          if (!isKeyCollision(error)) break;
+          if (!isKeyCollision(result.error)) break;
         }
 
         if (used.priority === null) {
           console.error("[spike-humanize] no free priority found; probe inactive");
-          return;
+          return null;
         }
 
         console.log(
@@ -444,6 +489,8 @@
             console.table(rows);
           }, 2000);
         }
+
+        return mounted;
       }
 
       function ViewName(mode) {
