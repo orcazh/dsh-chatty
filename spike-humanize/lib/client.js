@@ -80,6 +80,17 @@
         return [];
       }
 
+      // `entriesOfSlot` returns ONE winning entry per key (the shadowed one is
+      // gone). `entries` returns every candidate, shadowed ones included.
+      function allEntries(slots) {
+        try {
+          if (typeof slots.entries === "function") return slots.entries("conversation.chat.node");
+        } catch (error) {
+          console.warn("[spike-humanize] cannot list raw slot entries", error);
+        }
+        return listEntries(slots);
+      }
+
       function summarize(entries) {
         return entries.map(function (entry) {
           return {
@@ -154,87 +165,222 @@
 
       var PRIORITY_FALLBACKS = [-100, -1, -1000, -10000, 100, 1000];
 
-      // The native assistant renderer registers at priority 0; we shadow it.
-      // Grab its component so we can delegate anything we do not reimplement
-      // (reasoning, tool cards, images, actions).
-      function nativeEntryOf(slots, self) {
-        var entries = listEntries(slots);
-        for (var i = 0; i < entries.length; i++) {
-          var entry = entries[i];
-          if (!entry || !entry.options || entry.options.key !== "assistant-step") continue;
-          var component = entry.component;
-          if (component === self) continue;
-          if (component && component.__spike) continue;
-          return entry;
-        }
-        return null;
-      }
+      // The native assistant view needs props a plugin cannot reproduce
+      // (`kit` / `injected`: usePresentation, useDisclosure, useGroupAction, t).
+      // So shadowing it means re-rendering the block list here. What `ui-chat`
+      // itself does per block kind (read from its AssistantMarkdown source):
+      //   text      -> MarkdownText             (reused from ui-primitives)
+      //   reasoning -> ProcessReasoning fold    (rebuilt as <details>)
+      //   image     -> renderSlot(child)        (child slot declared below)
+      //   tool-call -> nothing at all           (skipped, same as native)
+      var SPLIT_RE = /\r?\n\s*\r?\n/;
 
-      function BubbleView(props, nativeEntry) {
-        var node = props.node;
-        var data = (node && node.data) || {};
-        var blocks = data.blocks || [];
-        var native = nativeEntry && nativeEntry.component;
-
-        // Anything that is not plain text (reasoning, tool-call, image) belongs
-        // to the native renderer. Splitting it would lose UI we cannot rebuild.
-        var hasNonText = blocks.some(function (block) {
-          return !block || block.kind !== "text";
-        });
-
-        if (hasNonText || !primitives || !primitives.MarkdownText) {
-          if (native) return jsx(native, props);
-          return jsx("pre", {
-            style: { whiteSpace: "pre-wrap", fontFamily: "inherit" },
-            children: textOf(node),
-          });
-        }
-
-        var segments = textOf(node)
-          .split(/\r?\n\s*\r?\n/)
+      function splitParagraphs(text) {
+        return String(text === null || text === undefined ? "" : text)
+          .split(SPLIT_RE)
           .map(function (part) {
             return part.trim();
           })
           .filter(Boolean);
+      }
 
-        if (segments.length < 2) {
-          if (native) return jsx(native, props);
+      // A node can be rendered twice: `groupPart: "reasoning"` for the process
+      // fold, `groupPart: "response"` for the answer. Mirror that filter, or
+      // every reply shows up twice.
+      function visibleBlocks(props) {
+        var blocks = (props.node && props.node.data && props.node.data.blocks) || [];
+        var part = props.groupPart;
+        return blocks.filter(function (block) {
+          if (!block || !block.kind) return false;
+          if (part === "reasoning") return block.kind === "reasoning";
+          if (part === "response") return block.kind !== "reasoning";
+          return true;
+        });
+      }
+
+      var BUBBLE_STYLE = {
+        background: "var(--dsw-alias-bg-layer-1, rgba(127,127,127,0.10))",
+        border: "0.5px solid var(--dsw-alias-border-l1, rgba(127,127,127,0.20))",
+        borderRadius: 14,
+        padding: "10px 14px",
+        maxWidth: 680,
+        lineHeight: 1.7,
+        overflowWrap: "anywhere",
+      };
+
+      var loggedProps = false;
+
+      function logPropsOnce(props) {
+        if (loggedProps) return;
+        loggedProps = true;
+        var keys = Object.keys(props || {}).sort();
+        var probe = {};
+        ["t", "renderSlot", "loadImage", "useDisclosure", "usePresentation", "useGroupAction", "useTurnData", "openFile", "fileMentions"].forEach(
+          function (key) {
+            probe[key] = typeof (props || {})[key];
+          },
+        );
+        console.log("[spike-humanize] view props keys: " + keys.join(", "));
+        console.log("[spike-humanize] view props probes " + safeJson(probe));
+        console.log("[spike-humanize] groupPart=" + String((props || {}).groupPart));
+      }
+
+      function markdownOr(text, streaming) {
+        if (!primitives || typeof primitives.MarkdownText !== "function") {
+          return jsx("span", { style: { whiteSpace: "pre-wrap" }, children: text });
         }
+        return jsx(primitives.MarkdownText, { text: text, streaming: streaming === true });
+      }
 
+      function reasoningNode(block, key, streaming) {
+        return jsx("details", {
+          key: "r" + key,
+          "data-spike": "reasoning",
+          style: {
+            border: "0.5px solid var(--dsw-alias-border-l1, rgba(127,127,127,0.20))",
+            borderRadius: 10,
+            padding: "6px 10px",
+            margin: "2px 0",
+            color: "var(--dsw-alias-label-secondary, inherit)",
+            fontSize: 13,
+          },
+          children: [
+            jsx("summary", {
+              key: "s",
+              style: { cursor: "pointer", color: "var(--dsw-alias-label-tertiary, inherit)" },
+              children: streaming ? "思考中…" : "思考过程",
+            }),
+            jsx("div", {
+              key: "b",
+              style: { marginTop: 6 },
+              children: markdownOr(block.text, streaming),
+            }),
+          ],
+        });
+      }
+
+      function imagesNode(blocks, key, props) {
+        if (typeof props.renderSlot !== "function") {
+          // Declaring the native child slot from a second entry risks a slot
+          // ownership error, so for the spike images are flagged, not drawn.
+          return jsx("div", {
+            key: "i" + key,
+            "data-spike": "images-missing",
+            style: { fontSize: 12, color: "var(--dsw-alias-label-tertiary, inherit)" },
+            children: "（图片：" + blocks.length + " 张，需原生组件渲染）",
+          });
+        }
         return jsx("div", {
-          "data-spike": "bubbles",
-          style: { display: "flex", flexDirection: "column", gap: 10, padding: "4px 0" },
-          children: segments.map(function (segment) {
-            return jsx("div", {
-              "data-spike": "bubble",
-              style: {
-                background: "var(--dsw-alias-bg-elevated, rgba(127,127,127,0.08))",
-                borderRadius: 14,
-                padding: "10px 14px",
-                maxWidth: 620,
-                lineHeight: 1.7,
-              },
-              children: jsx(primitives.MarkdownText, { text: segment, streaming: false }),
-            });
+          key: "i" + key,
+          "data-spike": "images",
+          children: props.renderSlot("conversation.chat.message.images", {
+            images: blocks.map(function (block) {
+              return { attachment: block.attachment };
+            }),
+            loadImage: props.loadImage,
+            align: "start",
           }),
         });
       }
 
-      function PassView(props, nativeEntry) {
-        var native = nativeEntry && nativeEntry.component;
-        if (native) return jsx(native, props);
-        return jsx("pre", {
-          style: { whiteSpace: "pre-wrap", fontFamily: "inherit" },
-          children: textOf(props.node),
+      function BubbleView(props) {
+        logPropsOnce(props);
+
+        var data = (props.node && props.node.data) || {};
+        var streaming = data.status === "running";
+        var blocks = visibleBlocks(props);
+        var children = [];
+        var key = 0;
+
+        for (var i = 0; i < blocks.length; i++) {
+          var block = blocks[i];
+
+          if (block.kind === "text") {
+            var text = String(block.text === null || block.text === undefined ? "" : block.text);
+            if (!text.trim()) continue;
+            // Splitting mid-stream would make bubbles jump around, so the
+            // running reply stays in one bubble and settles into many.
+            var parts = streaming ? [text] : splitParagraphs(text);
+            for (var p = 0; p < parts.length; p++) {
+              children.push(
+                jsx("div", {
+                  key: "t" + key++,
+                  "data-spike": "bubble",
+                  style: BUBBLE_STYLE,
+                  children: markdownOr(parts[p], streaming),
+                }),
+              );
+            }
+            continue;
+          }
+
+          if (block.kind === "reasoning") {
+            if (!String(block.text || "").trim()) continue;
+            children.push(reasoningNode(block, key++, streaming));
+            continue;
+          }
+
+          if (block.kind === "image") {
+            var group = [block];
+            while (i + 1 < blocks.length && blocks[i + 1] && blocks[i + 1].kind === "image") {
+              group.push(blocks[i + 1]);
+              i += 1;
+            }
+            var images = imagesNode(group, key++, props);
+            if (images) children.push(images);
+            continue;
+          }
+
+          // `tool-call` renders nothing natively; unknown kinds get a stub so
+          // content is never silently swallowed.
+          if (block.kind !== "tool-call") {
+            children.push(
+              jsx("div", {
+                key: "u" + key++,
+                "data-spike": "unknown",
+                style: { fontSize: 12, color: "var(--dsw-alias-label-tertiary, inherit)" },
+                children: "（未支持的 block：" + block.kind + "）",
+              }),
+            );
+          }
+        }
+
+        if (!children.length) return null;
+
+        return jsx("div", {
+          "data-spike": "bubbles",
+          style: { display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 8, padding: "2px 0" },
+          children: children,
         });
+      }
+
+      // Baseline for A/B: same content, no bubbles (what a "pass-through"
+      // plugin would look like), so bubble-vs-plain differences are obvious.
+      function PassView(props) {
+        var blocks = visibleBlocks(props);
+        var streaming = props.node && props.node.data && props.node.data.status === "running";
+        var children = [];
+        var key = 0;
+        for (var i = 0; i < blocks.length; i++) {
+          var block = blocks[i];
+          if (block.kind === "text") {
+            if (String(block.text || "").trim()) children.push(markdownOr(block.text, streaming));
+          } else if (block.kind === "reasoning") {
+            if (String(block.text || "").trim()) children.push(reasoningNode(block, key++, streaming));
+          } else if (block.kind === "image") {
+            var images = imagesNode([block], key++, props);
+            if (images) children.push(images);
+          }
+        }
+        if (!children.length) return null;
+        return jsx("div", { "data-spike": "pass", children: children });
       }
 
       function makeView(slots, kind) {
         function View(props) {
-          var native = nativeEntryOf(slots, View);
           if (kind === "probe") return ProbeView(props);
-          if (kind === "pass") return PassView(props, native);
-          return BubbleView(props, native);
+          if (kind === "pass") return PassView(props);
+          return BubbleView(props);
         }
         View.__spike = true;
         return View;
@@ -416,6 +562,34 @@
             var rows = summarize(listEntries(slots));
             console.table(rows);
             return rows;
+          },
+          // G1c: what is actually reachable on the slots service, and does
+          // `entries` expose the shadowed native component?
+          slots: function () {
+            var out = { mode: mode, priority: used.priority };
+            try {
+              out.ownKeys = Object.keys(slots);
+            } catch (error) {
+              out.ownKeys = "ERROR: " + String((error && error.message) || error);
+            }
+            try {
+              var proto = Object.getPrototypeOf(slots);
+              out.protoMethods = proto ? Object.getOwnPropertyNames(proto) : null;
+            } catch (error) {
+              out.protoMethods = "ERROR: " + String((error && error.message) || error);
+            }
+            try {
+              out.elected = summarize(listEntries(slots));
+            } catch (error) {
+              out.elected = "ERROR: " + String((error && error.message) || error);
+            }
+            try {
+              out.all = summarize(allEntries(slots));
+            } catch (error) {
+              out.all = "ERROR: " + String((error && error.message) || error);
+            }
+            console.log("[spike-humanize] slots " + safeJson(out));
+            return out;
           },
           setMode: switchMode,
           setPriority: function (next) {

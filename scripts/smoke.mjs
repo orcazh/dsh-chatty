@@ -132,12 +132,12 @@ async function testClient(mode) {
   if (mode === "probe") {
     assert.equal(vnode.props["data-spike"], "probe", "probe mode must render the debug card");
     assert.ok(JSON.stringify(vnode).includes("第一段"), "probe card must show the text");
+  } else if (mode === "pass") {
+    assert.equal(vnode.props["data-spike"], "pass", "pass mode must render without bubbles");
+    assert.ok(JSON.stringify(vnode).includes("第一段"), "pass view did not render the text");
   } else {
     assert.equal(vnode.props["data-spike"], "bubbles", "pure text must render as bubbles");
     assert.equal(vnode.props.children.length, 2, "expected two bubbles");
-
-    const rendered = JSON.stringify(vnode);
-    assert.ok(rendered.includes("第一段"), "view did not render the text");
 
     const firstBubble = vnode.props.children[0];
     assert.equal(firstBubble.props["data-spike"], "bubble");
@@ -145,11 +145,64 @@ async function testClient(mode) {
     assert.equal(typeof firstBubble.props.children.type, "function", "bubbles must use MarkdownText");
   }
 
-  // Non-text blocks (tool-call / reasoning / image) must go to the native view.
-  if (mode !== "probe") {
-    const mixed = { data: { status: "final", blocks: [{ kind: "text", text: "工具前" }, { kind: "tool-call" }] } };
-    const mixedVnode = entry.component({ node: mixed });
-    assert.equal(mixedVnode.type, "pre", "mixed content must fall back to native/plain");
+  if (mode === "bubbles") {
+    // A running reply stays in one bubble; splitting mid-stream would jitter.
+    const streaming = entry.component({
+      node: { data: { status: "running", blocks: [{ kind: "text", text: "第一段。\n\n第二段。" }] } },
+    });
+    assert.equal(streaming.props.children.length, 1, "streaming must not split");
+
+    // `tool-call` renders nothing natively, so it renders nothing here either.
+    const onlyTool = entry.component({
+      node: { data: { status: "final", blocks: [{ kind: "tool-call" }] } },
+    });
+    assert.equal(onlyTool, null, "tool-call-only step must render nothing");
+
+    // Reasoning is rebuilt as a <details> fold.
+    const withReasoning = entry.component({
+      node: {
+        data: {
+          status: "final",
+          blocks: [
+            { kind: "reasoning", text: "先想一想。" },
+            { kind: "text", text: "答案。" },
+          ],
+        },
+      },
+    });
+    assert.equal(withReasoning.props.children.length, 2, "expected reasoning + bubble");
+    assert.equal(withReasoning.props.children[0].type, "details", "reasoning must be a fold");
+
+    // The same node renders twice; groupPart decides which half we emit.
+    const reasoningHalf = entry.component({
+      node: {
+        data: {
+          status: "final",
+          blocks: [
+            { kind: "reasoning", text: "先想一想。" },
+            { kind: "text", text: "答案。" },
+          ],
+        },
+      },
+      groupPart: "reasoning",
+    });
+    assert.equal(reasoningHalf.props.children.length, 1, "reasoning half must drop the answer");
+    assert.equal(reasoningHalf.props.children[0].type, "details");
+
+    const responseHalf = entry.component({
+      node: {
+        data: {
+          status: "final",
+          blocks: [
+            { kind: "reasoning", text: "先想一想。" },
+            { kind: "text", text: "答案。" },
+          ],
+        },
+      },
+      groupPart: "response",
+    });
+    assert.equal(responseHalf.props.children.length, 1, "response half must drop the reasoning");
+    assert.equal(responseHalf.props.children[0].props["data-spike"], "bubble");
   }
 
   // Runtime mode switching must mount/unmount without a page reload.
@@ -287,5 +340,6 @@ console.log("[smoke] phase 0 probe");
 await testHost();
 await testClient("probe");
 await testClient("bubbles");
+await testClient("pass");
 console.log("[smoke] all checks passed");
 process.exit(0);
