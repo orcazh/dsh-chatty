@@ -9,6 +9,7 @@
     "smoke": "node scripts/smoke.mjs",
     "verify": "node scripts/verify-mount.mjs",
     "scope": "node scripts/scope.mjs",
+    "g2": "node scripts/g2-score.mjs",
     "install:spike": "node scripts/install-spike.mjs",
     "uninstall:spike": "node scripts/uninstall-spike.mjs"
   }

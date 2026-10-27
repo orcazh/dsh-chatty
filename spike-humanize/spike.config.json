@@ -4,7 +4,9 @@
   "captureAssistant": true,
   "verbose": false,
   "scope": {
-    "mode": "off",
-    "sessions": []
+    "mode": "allowlist",
+    "sessions": [
+      "session-c654d4f4-6304-49fe-addb-49cc1b38eaee"
+    ]
   }
 }

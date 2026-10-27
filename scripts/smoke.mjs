@@ -11,7 +11,7 @@
  */
 
 import assert from "node:assert/strict";
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, statSync, truncateSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -282,6 +282,16 @@ async function testHost() {
   const original = readFileSync(configPath, "utf8");
   const liveConfig = JSON.parse(original);
 
+  // Smoke captures go to the same file the G2 sampler reads. Remember where it
+  // ended so the run leaves no fake samples behind.
+  const capturePath = join(ROOT, "spike-humanize/.spike-output/assistant.jsonl");
+  let captureSize = 0;
+  try {
+    captureSize = statSync(capturePath).size;
+  } catch {
+    captureSize = 0;
+  }
+
   try {
     // --- scope.mode = off must be inert (fail-closed) -----------------------
     writeFileSync(
@@ -366,6 +376,11 @@ async function testHost() {
     console.log("  host: ok (scope gating + section + capture)");
   } finally {
     writeFileSync(configPath, original, "utf8");
+    try {
+      truncateSync(capturePath, captureSize);
+    } catch {
+      // capture file may not exist yet; nothing to roll back
+    }
   }
 }
 

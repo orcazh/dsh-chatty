@@ -4,8 +4,14 @@
 **DSH 版本**：0.2.1-rc.3
 **结论**：**通过（A 方案否决，改用 B 方案）**
 
+> **2026-10-27 后续修正（重要）**：G1c 实测拿到渲染 props 后确认，
+> `conversation.chat.node` 的视图组件**能拿到 `sessionId`**（`props.sessionId`）。
+> 本文「node 数据不含 sessionId」的结论只对 `node.data` 成立，对 props 不成立。
+> 因此 FR-12 的客户端半边**不一定需要 B 方案的正文指纹**，可改为直接用 props.sessionId 判定。
+> 详见文末「补充：渲染 props 实况」。
+
 > 背景：FR-12 要求插件只在选定会话生效。宿主侧已确定可行（`context.agent.session.header.id`）。
-> 客户端侧未知：`conversation.chat.node` 的 node 数据只有 `turn / step / status / blocks`，**不含 sessionId**。
+> 客户端侧未知：`conversation.chat.node` 的 node 数据只有 `turn / step / status / blocks`。
 
 ---
 
@@ -96,3 +102,34 @@
 - G6 **通过**：结论是「客户端拿不到会话身份」，因此 FR-12 的渲染半边改走**内容指纹**方案。
 - 该结论同时把 FR-12 从「客户端需要会话 id」解耦成「客户端只需要宿主发布的分段表」，实现风险下降。
 - 下一步：G1（负数优先级能否真正遮蔽原生渲染）+ G2（L2 采样）。
+
+---
+
+## 补充：渲染 props 实况（2026-10-27，G1c 期间实测）
+
+`BubbleView` 首帧打印出的 props key：
+
+```
+cwd, fileMentions, forkAt, groupPart, inputActions, inspectCall, loadImage, node, openFile,
+renderFactorySlot, sessionId, turnProcess, useAccess, useChat, useConversation, useDisclosure,
+useGroupAction, useInput, usePanelInfo, useProjection, useRemoteAccess, useResource, useSession,
+useSessionAccess, useSessionRetainInfo, useSessionStatus, useSessions, useTrajectory, useTurnData,
+useWorkspaceAccess, useWorkspaces
+```
+
+| 字段 | 意义 |
+| :--- | :--- |
+| `sessionId` | **视图组件能拿到会话身份** → FR-12 客户端半边可直接判定，不必依赖正文指纹 |
+| `groupPart` | 同一节点的两次渲染（`reasoning` / `response`）靠它分流，必须遵守 |
+| `t`、`renderSlot` | **不在 props 里**（未声明 `locale` / `children`）→ 文案与子 slot 需自备 |
+| `useDisclosure` / `useGroupAction` / `useTurnData` / `loadImage` | 可用，但拼不出原生 `AssistantNodeView` 所需的完整 kit（缺 `usePresentation`） |
+
+结论：**「借原生组件」依然不可行**；但**「按会话判定」可行**。
+
+### 需要额外验证的点
+
+| # | 风险 | 处理 |
+| :--- | :--- | :--- |
+| 1 | 未选中的会话被遮蔽后如何交还原生 | 遮蔽是全局的。未选中会话只能自绘（降级）或运行时注销注册（有闪烁）。需要单独一个 Gate 定夺 |
+| 2 | `props.sessionId` 的确切形状（字符串 id / 引用对象） | `logPropsOnce` 已打印 `typeof`，下一次实机确认 |
+| 3 | 指纹方案若保留，需宿主与客户端**完全一致** | 同构纯函数 + 单测 |

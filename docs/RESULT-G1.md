@@ -107,15 +107,21 @@ jsx(primitives.MarkdownText, {
    `color-mix(in srgb, var(--dsw-alias-label-primary) 9%, transparent)`。
    `color-mix` 是 DSH 自身 CSS 就在用的写法，可安全使用。
 
-### 实机结果
+### 实机结果（2026-10-27 终验）
 
 | 检查项 | 结果 |
 | :--- | :--- |
 | 纯文本回复拆成多气泡 | **通过**（3 段 → 3 个独立圆角框） |
+| 气泡底色 | **通过**（灰色底，浅/深主题均可区分） |
+| Markdown 加粗 | **通过** |
+| 代码块 | **通过**（完整一个框 + 右上角复制按钮） |
+| 列表 | **通过**（同一列表不拆散） |
 | 是否重复渲染 | **通过**（没有重复） |
 | 含工具调用的回复 | 正常，工具调用不进入气泡 |
 | 工具卡片是否丢失 | **无影响**（`tool-call` 是独立 key 的节点，本插件未触碰） |
-| 负数优先级 + 运行时开关 | 通过（沿用 G1a） |
+| 负数优先级 + 运行时开关 | **通过**（沿用 G1a） |
+
+**G1 至此全部通过。**
 
 `tool-call` 在 `conversation.chat.node` 下是**独立 key 的一个 node**，不在 `assistant-step`
 内部渲染；原生 `AssistantMarkdown` 遇到 `tool-call` block 直接 `break`。
