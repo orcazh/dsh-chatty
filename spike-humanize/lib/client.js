@@ -275,8 +275,14 @@
       // `--dsw-alias-bg-layer-1` resolves to the *base* colour (theme layer 1 ==
       // page background), which is why the first attempt showed only a border.
       // Tint the theme's own text colour instead: adapts to light and dark.
+      //
+      // The two `--hz-*` wrappers are the palette hooks: the settings page
+      // writes them onto `:root`, so picking a colour recolours every bubble
+      // that is already on screen without a React re-render.
       var BUBBLE_STYLE = {
-        background: "color-mix(in srgb, var(--dsw-alias-label-primary, #888888) 9%, transparent)",
+        background:
+          "var(--hz-bubble-bg, color-mix(in srgb, var(--dsw-alias-label-primary, #888888) 9%, transparent))",
+        color: "var(--hz-bubble-fg, inherit)",
         border: "0.5px solid var(--dsw-alias-border-l1, rgba(127,127,127,0.20))",
         borderRadius: 16,
         padding: "10px 14px",
@@ -474,6 +480,87 @@
         forceMotion =
           reveal.motion === "on" || reveal.motion === "off" ? reveal.motion : "auto";
         window.localStorage.setItem(MOTION_KEY, forceMotion);
+      }
+
+      // --- bubble palette ---------------------------------------------------
+      // Two of the four colours are ours to paint (the assistant bubbles we
+      // render); the user's bubbles belong to DSH's own `MessageItem`, which
+      // paints `background: var(--dsw-specific-bubble)` and
+      // `color: var(--dsw-alias-label-primary)`. Overriding that one custom
+      // property recolours the user's bubbles app-wide with no slot shadowing,
+      // which is why this is a CSS override and not another registered view.
+      var PALETTE_CSS_ID = "spike-humanize-palette-css";
+      var palette = { userBubble: "", userText: "", assistantBubble: "", assistantText: "" };
+
+      /** "#rrggbb" -> "#111"/"#fff", whichever stays readable on it. */
+      function readableOn(hex) {
+        var match = /^#([0-9a-f]{6})$/i.exec(String(hex || ""));
+        if (!match) return "#111111";
+        var n = parseInt(match[1], 16);
+        var channels = [(n >> 16) & 255, (n >> 8) & 255, n & 255].map(function (value) {
+          var c = value / 255;
+          return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+        });
+        var luminance = 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2];
+        return luminance > 0.45 ? "#111111" : "#ffffff";
+      }
+
+      function ensurePaletteCss() {
+        try {
+          if (typeof document === "undefined" || !document.createElement) return;
+          var style = document.getElementById(PALETTE_CSS_ID);
+          if (!style) {
+            style = document.createElement("style");
+            style.id = PALETTE_CSS_ID;
+            document.head.appendChild(style);
+          }
+
+          var css = [];
+          if (palette.assistantBubble) {
+            css.push(":root{--hz-bubble-bg:" + palette.assistantBubble + "}");
+            css.push(
+              ":root{--hz-bubble-fg:" +
+                (palette.assistantText || readableOn(palette.assistantBubble)) +
+                "}",
+            );
+          } else if (palette.assistantText) {
+            css.push(":root{--hz-bubble-fg:" + palette.assistantText + "}");
+          }
+
+          if (palette.userBubble) {
+            // Two shots at the same target on purpose. The token covers every
+            // surface DSH paints with it; the class rule covers the case where
+            // the token is defined closer to the bubble (inline on a parent),
+            // where a `:root` override would lose. DSH's own class is a
+            // CSS-module hash (`LOmM4q_bubble`), so match the stable suffix; if
+            // a future DSH renames it, the token still applies.
+            css.push(":root{--dsw-specific-bubble:" + palette.userBubble + " !important}");
+            css.push(
+              "[class*='_bubble']{background:" +
+                palette.userBubble +
+                " !important;color:" +
+                (palette.userText || readableOn(palette.userBubble)) +
+                " !important}",
+            );
+          } else if (palette.userText) {
+            css.push("[class*='_bubble']{color:" + palette.userText + " !important}");
+          }
+
+          style.textContent = css.join("");
+        } catch {
+          // no DOM: bubbles keep the theme colours
+        }
+      }
+
+      function applyPalette(theme) {
+        if (!theme || typeof theme !== "object") return;
+        palette = {
+          userBubble: typeof theme.userBubble === "string" ? theme.userBubble : "",
+          userText: typeof theme.userText === "string" ? theme.userText : "",
+          assistantBubble: typeof theme.assistantBubble === "string" ? theme.assistantBubble : "",
+          assistantText: typeof theme.assistantText === "string" ? theme.assistantText : "",
+        };
+        ensurePaletteCss();
       }
 
       var TYPING_CSS_ID = "spike-humanize-typing-css";
@@ -707,6 +794,42 @@
         }
       }
 
+      /** Turn number of a reveal key ("17:1"), or NaN when it has none. */
+      function turnOf(nodeId) {
+        var index = String(nodeId).indexOf(":");
+        return index < 0 ? NaN : Number(String(nodeId).slice(0, index));
+      }
+
+      /**
+       * A new turn started while an older reply was still pacing its bubbles
+       * (the user sent another message before the reveal finished — DSH queues
+       * it and starts the next turn as soon as the previous one ends). Letting
+       * the old row keep popping looks like the bot talking over itself, so
+       * every older reveal is marked finished and renders in full at once.
+       */
+      function retireStaleReveals(keepId) {
+        var keepTurn = turnOf(keepId);
+        var stale = [];
+        Object.keys(reveals).forEach(function (nodeId) {
+          if (nodeId === keepId) return;
+          var entry = reveals[nodeId];
+          if (!entry || entry.done) return;
+          var turn = turnOf(nodeId);
+          // Unknown turn (no id) is not ours to judge; a newer or equal turn is
+          // not stale.
+          if (!Number.isFinite(keepTurn) || !Number.isFinite(turn) || turn >= keepTurn) return;
+          entry.done = true;
+          stopReveal(nodeId);
+          stale.push(nodeId);
+        });
+        if (!stale.length) return;
+        // Deferred: this runs during render, and notifying a listener calls
+        // setState in another row ("Cannot update a component while rendering").
+        setTimeout(function () {
+          for (var i = 0; i < stale.length; i++) notifyReveal(stale[i]);
+        }, 0);
+      }
+
       function renderBubbles(props) {
         logPropsOnce(props);
 
@@ -724,7 +847,10 @@
 
         var bump = useState(0)[1];
         var entry = revealable ? revealOf(nodeId) : { streaming: false, shown: 0, done: true };
-        if (revealable && streaming) entry.streaming = true;
+        if (revealable && streaming) {
+          entry.streaming = true;
+          retireStaleReveals(nodeId);
+        }
 
         var built = buildUnits(props, streaming);
         var total = built.bubbles.length;
@@ -1135,6 +1261,12 @@
               attached: Object.keys(scoped.attached),
               hostLoaded: remote.loaded,
               hostError: remote.error,
+              palette: {
+                userBubble: palette.userBubble,
+                userText: palette.userText,
+                assistantBubble: palette.assistantBubble,
+                assistantText: palette.assistantText,
+              },
               reveals: {},
             };
             Object.keys(reveals).forEach(function (id) {
@@ -1644,6 +1776,7 @@
         if (!config || typeof config !== "object") return null;
         remote.config = config;
         applyRevealSettings(config.reveal);
+        applyPalette(config.theme);
 
         var scope = config.scope || {};
         var quiet = options && options.quiet;
@@ -1749,6 +1882,10 @@
             "[data-hz-num]{width:64px;text-align:right;font-variant-numeric:tabular-nums}" +
             "[data-hz-session]{display:flex;align-items:center;gap:8px;padding:3px 0}" +
             "[data-hz-session]>span:first-of-type{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}" +
+            "[data-hz-all]{display:flex;align-items:center;gap:8px;padding:6px 0;margin:6px 0 2px;border-bottom:1px solid var(--dsw-alias-border-l1,rgba(0,0,0,.08))}" +
+            "[data-hz-all] input[type=checkbox]{margin:0}" +
+            "[data-hz-color-row] input[type=color]{width:38px;height:24px;padding:1px;border-radius:6px;border:1px solid var(--dsw-alias-border-l1,rgba(0,0,0,.15));background:none;cursor:pointer}" +
+            "[data-hz-reset]{margin-left:auto;padding:3px 10px;border-radius:7px;border:1px solid var(--dsw-alias-border-l1,rgba(0,0,0,.12));background:none;cursor:pointer;white-space:nowrap}" +
             "[data-hz-actions]{display:flex;align-items:center;gap:12px;margin-top:12px;flex-wrap:wrap}" +
             "[data-hz-save]{padding:5px 14px;border-radius:8px;border:1px solid var(--dsw-alias-border-l1,rgba(0,0,0,.12));background:var(--dsw-alias-bg-layer-1,rgba(255,255,255,.9));cursor:pointer;white-space:nowrap;flex:0 0 auto}" +
             "[data-hz-save][disabled]{opacity:.5;cursor:default}" +
@@ -1788,18 +1925,34 @@
         var busy = busyPair[0];
         var setBusy = busyPair[1];
 
+        // The draft the user is looking at, kept in a ref too: a fast drag can
+        // fire several `edit()` calls before React re-renders, and merging into
+        // the stale render closure would drop all but the last keystroke.
+        var latest = useRef(null);
+        var saveTimer = useRef(null);
+        var saveSeq = useRef(0);
+
         function adopt(body) {
           var scope = (body.config || {}).scope || {};
           var reveal = (body.config || {}).reveal || {};
-          setData(body);
-          setDraft({
-            enabled: scope.mode === "allowlist" || scope.mode === "all",
+          var theme = (body.config || {}).theme || {};
+          var next = {
             sessions: Array.isArray(scope.sessions) ? scope.sessions.slice() : [],
             gap: Number.isFinite(Number(reveal.gap)) ? Number(reveal.gap) : 450,
             perChar: Number.isFinite(Number(reveal.perChar)) ? Number(reveal.perChar) : 6,
             buffer: reveal.buffer !== false,
             motion: reveal.motion === "on" || reveal.motion === "off" ? reveal.motion : "auto",
-          });
+            theme: {
+              userBubble: typeof theme.userBubble === "string" ? theme.userBubble : "",
+              userText: typeof theme.userText === "string" ? theme.userText : "",
+              assistantBubble:
+                typeof theme.assistantBubble === "string" ? theme.assistantBubble : "",
+              assistantText: typeof theme.assistantText === "string" ? theme.assistantText : "",
+            },
+          };
+          latest.current = next;
+          setData(body);
+          setDraft(next);
         }
 
         function load() {
@@ -1819,48 +1972,75 @@
           return undefined;
         }, []);
 
+        /** Persists the whole draft. Everything on this page autosaves. */
+        function persist(next) {
+          var seq = saveSeq.current + 1;
+          saveSeq.current = seq;
+          setBusy(true);
+          setError(null);
+          saveState({
+            scope: {
+              // An empty list IS "off" — there is no separate switch to forget.
+              mode: (next.sessions || []).length ? "allowlist" : "off",
+              sessions: next.sessions || [],
+            },
+            reveal: {
+              gap: Number(next.gap),
+              perChar: Number(next.perChar),
+              buffer: next.buffer,
+              motion: next.motion,
+            },
+            theme: next.theme,
+          })
+            .then(function (body) {
+              if (!body || body.ok !== true) {
+                throw new Error((body && body.error) || "保存失败");
+              }
+              // A newer save may have landed while this one was in flight;
+              // applying the older response would undo the newer state.
+              if (seq !== saveSeq.current) return;
+              applyRemoteConfig(body.config, { quiet: true });
+              setNote("已保存，立即生效");
+            })
+            .catch(function (caught) {
+              if (seq !== saveSeq.current) return;
+              setError(errText(caught));
+            })
+            .then(function () {
+              if (seq === saveSeq.current) setBusy(false);
+            });
+        }
+
+        /**
+         * Applies a change and saves it shortly after. Every control on the page
+         * is live: unchecking a session must take effect without hunting for a
+         * save button, which is exactly how it used to look "still enabled".
+         */
         function edit(patch) {
-          setDraft(Object.assign({}, draft, patch));
+          var next = Object.assign({}, latest.current || draft, patch);
+          latest.current = next;
+          setDraft(next);
           setNote("");
+          if (saveTimer.current) clearTimeout(saveTimer.current);
+          saveTimer.current = setTimeout(function () {
+            saveTimer.current = null;
+            persist(next);
+          }, 300);
         }
 
         function toggleSession(id) {
-          var list = (draft.sessions || []).slice();
+          var list = ((latest.current || draft).sessions || []).slice();
           var index = list.indexOf(id);
           if (index >= 0) list.splice(index, 1);
           else list.push(id);
           edit({ sessions: list });
         }
 
-        function save() {
-          setBusy(true);
-          setError(null);
-          saveState({
-            scope: {
-              mode: draft.enabled ? "allowlist" : "off",
-              sessions: draft.sessions || [],
-            },
-            reveal: {
-              gap: Number(draft.gap),
-              perChar: Number(draft.perChar),
-              buffer: draft.buffer,
-              motion: draft.motion,
-            },
-          })
-            .then(function (body) {
-              if (!body || body.ok !== true) {
-                throw new Error((body && body.error) || "保存失败");
-              }
-              adopt(body);
-              applyRemoteConfig(body.config, { quiet: true });
-              setNote("已保存，立即生效");
-            })
-            .catch(function (caught) {
-              setError(errText(caught));
-            })
-            .then(function () {
-              setBusy(false);
-            });
+        function editTheme(key, value) {
+          var base = (latest.current || draft).theme || {};
+          var patch = {};
+          patch[key] = value;
+          edit({ theme: Object.assign({}, base, patch) });
         }
 
         var children = [];
@@ -1879,12 +2059,14 @@
             h(
               "div",
               { key: "error", "data-hz-card": "1" },
-              h("div", { "data-hz-err": "1", children: "连不上宿主：" + error }),
-              h(
-                "div",
-                { "data-hz-dim": "1" },
-                "请完全退出 DSH 再启动（托盘退出，不是关窗口），然后回到这里重试。",
-              ),
+              h("div", { "data-hz-err": "1", children: (data ? "保存失败：" : "连不上宿主：") + error }),
+              data
+                ? null
+                : h(
+                    "div",
+                    { "data-hz-dim": "1" },
+                    "请完全退出 DSH 再启动（托盘退出，不是关窗口），然后回到这里重试。",
+                  ),
             ),
           );
         }
@@ -1896,93 +2078,184 @@
           return h("div", { "data-hz-page": "1" }, children);
         }
 
-        // --- on / off ------------------------------------------------------
+        // --- session checklist --------------------------------------------
+        // There is no "enable" switch: an empty list IS off. The old page had
+        // both, so unchecking one session still left the switch on and it was
+        // impossible to tell, at a glance, what was actually live.
+        //
+        // Prefer the live client catalog: it is what the sidebar shows and it
+        // carries real titles. The host list is only a fallback (it cannot see
+        // `displayTitle`, so its rows often have no title at all).
+        var sessions = liveSessions();
+        if (!sessions.length) sessions = (data && data.sessions) || [];
+        var selected = draft.sessions || [];
+        var allIds = sessions.map(function (row) {
+          return row.id;
+        });
+        var selectedHere = allIds.filter(function (id) {
+          return selected.indexOf(id) >= 0;
+        });
+        var allChecked = allIds.length > 0 && selectedHere.length === allIds.length;
+        var someChecked = selectedHere.length > 0 && !allChecked;
+        var orphanCount = selected.length - selectedHere.length;
+
+        var rows = [];
+
+        for (var i = 0; i < sessions.length; i++) {
+          (function (row) {
+            var checked = selected.indexOf(row.id) >= 0;
+            rows.push(
+              h(
+                "label",
+                { key: row.id, "data-hz-session": "1" },
+                h("input", {
+                  type: "checkbox",
+                  checked: checked,
+                  onChange: function () {
+                    toggleSession(row.id);
+                  },
+                }),
+                h("span", { children: row.title || "未命名会话" }),
+                h("span", { "data-hz-dim": "1", children: "…" + row.shortId }),
+                row.current || row.id === lastSessionId
+                  ? h("span", { "data-hz-dim": "1", children: "· 当前" })
+                  : null,
+              ),
+            );
+          })(sessions[i]);
+        }
+
+        var summary;
+        if (!sessions.length) {
+          summary = "还没有可选的会话。先在 DSH 里打开一个会话，再回到这里。";
+        } else if (selectedHere.length === 0) {
+          summary = "当前：一个会话都没勾，插件完全不起作用。";
+        } else {
+          summary = "当前：" + selectedHere.length + " / " + allIds.length + " 个会话生效。";
+        }
+
         children.push(
           h(
             "div",
-            { key: "scope", "data-hz-card": "1" },
-            h(
-              "label",
-              { "data-hz-row": "1" },
-              h("input", {
-                type: "checkbox",
-                checked: draft.enabled,
-                onChange: function (event) {
-                  edit({ enabled: event.target.checked });
-                },
-              }),
-              h("span", { children: "在选定会话当中生效" }),
-            ),
+            { key: "sessions", "data-hz-card": "1" },
+            h("h3", { children: "在哪些会话里生效" }),
             h(
               "div",
               { "data-hz-dim": "1" },
-              draft.enabled
-                ? "只有下面勾选的会话会变成多条消息；其他会话保持原样。"
-                : "当前全部关闭。聊天界面完全保持 DSH 原样。",
+              "勾上就生效，取消就立刻恢复原样，改完不用点保存。全都不勾 = 完全关闭。",
             ),
+            sessions.length
+              ? h(
+                  "label",
+                  { "data-hz-all": "1" },
+                  h("input", {
+                    type: "checkbox",
+                    checked: allChecked,
+                    // A partially selected list must read as "neither", or the
+                    // box looks broken when some rows are off.
+                    ref: function (element) {
+                      if (element) element.indeterminate = someChecked;
+                    },
+                    onChange: function () {
+                      // Unchecked (or partial) -> select every row;
+                      // already all selected -> clear every row.
+                      edit({ sessions: allChecked ? [] : allIds.slice() });
+                    },
+                  }),
+                  h("span", { children: "全选" }),
+                  h("span", { "data-hz-dim": "1", children: "（" + allIds.length + " 个）" }),
+                )
+              : null,
+            rows,
+            h(
+              "div",
+              {
+                key: "summary",
+                "data-hz-summary": "1",
+                "data-hz-dim": "1",
+                style: { marginTop: 8 },
+                children: summary,
+              },
+            ),
+            // Ids that are checked but no longer in the catalog belong to a
+            // workspace that is not open (or to a deleted session). They still
+            // match in the host, so they must not be silently invisible.
+            orphanCount > 0
+              ? h(
+                  "div",
+                  { key: "orphans", "data-hz-err": "1" },
+                  "另外还有 " +
+                    orphanCount +
+                    " 个已勾选的会话不在这个列表里（属于其他工作区或已归档）。" +
+                    "点一下「全选」再取消，就能把它们一起清掉。",
+                )
+              : null,
           ),
         );
 
-        // --- session checklist --------------------------------------------
-        if (draft.enabled) {
-          // Prefer the live client catalog: it is what the sidebar shows and it
-          // carries real titles. The host list is only a fallback (it cannot see
-          // `displayTitle`, so its rows often have no title at all).
-          var sessions = liveSessions();
-          if (!sessions.length) sessions = (data && data.sessions) || [];
-          var rows = [];
-
-          if (!sessions.length) {
-            rows.push(
-              h(
-                "div",
-                { key: "none", "data-hz-dim": "1" },
-                "还没有可选的会话。先在 DSH 里打开一个会话，再回到这里。",
-              ),
-            );
-          }
-
-          for (var i = 0; i < sessions.length; i++) {
-            (function (row) {
-              var checked = (draft.sessions || []).indexOf(row.id) >= 0;
-              rows.push(
-                h(
-                  "label",
-                  { key: row.id, "data-hz-session": "1" },
-                  h("input", {
-                    type: "checkbox",
-                    checked: checked,
-                    onChange: function () {
-                      toggleSession(row.id);
-                    },
-                  }),
-                  h("span", { children: row.title || "未命名会话" }),
-                  h("span", { "data-hz-dim": "1", children: "…" + row.shortId }),
-                  row.current || row.id === lastSessionId
-                    ? h("span", { "data-hz-dim": "1", children: "· 当前" })
-                    : null,
-                ),
-              );
-            })(sessions[i]);
-          }
-
-          children.push(
+        // --- palette --------------------------------------------------------
+        // Two swatches per side: background + text. Leaving a swatch on
+        // "默认" keeps DSH's own colour. Picking only a background auto-picks a
+        // readable text colour, so a dark bubble never renders dark-on-dark.
+        function colorRow(key, label, bubbleKey, textKey, fallback) {
+          var theme = draft.theme || {};
+          var bubble = theme[bubbleKey] || "";
+          var text = theme[textKey] || "";
+          return h(
+            "div",
+            { key: key, "data-hz-row": "1", "data-hz-color-row": "1" },
+            h("span", { style: { minWidth: 88 }, children: label }),
+            h("input", {
+              type: "color",
+              "data-hz-color": bubbleKey,
+              value: bubble || fallback,
+              onChange: function (event) {
+                editTheme(bubbleKey, event.target.value);
+              },
+            }),
+            h("span", { "data-hz-dim": "1", children: bubble ? "底色" : "底色（默认）" }),
+            h("input", {
+              type: "color",
+              "data-hz-color": textKey,
+              value: text || "#111111",
+              onChange: function (event) {
+                editTheme(textKey, event.target.value);
+              },
+            }),
+            h("span", { "data-hz-dim": "1", children: text ? "文字" : "文字（自动）" }),
             h(
-              "div",
-              { key: "sessions", "data-hz-card": "1" },
-              h("h3", { children: "在哪些会话里生效" }),
-              h("div", { "data-hz-dim": "1" }, "勾选后就对那个会话生效，切换会话不影响其他会话。"),
-              rows,
-              (draft.sessions || []).length === 0
-                ? h(
-                    "div",
-                    { "data-hz-err": "1" },
-                    "还没有勾选任何会话，所以现在实际上不会生效。",
-                  )
-                : null,
+              "button",
+              {
+                type: "button",
+                "data-hz-reset": key,
+                onClick: function () {
+                  var base = (latest.current || draft).theme || {};
+                  var patch = {};
+                  patch[bubbleKey] = "";
+                  patch[textKey] = "";
+                  edit({ theme: Object.assign({}, base, patch) });
+                },
+              },
+              "恢复默认",
             ),
           );
         }
+
+        children.push(
+          h(
+            "div",
+            { key: "palette", "data-hz-card": "1" },
+            h("h3", { children: "气泡配色" }),
+            h(
+              "div",
+              { "data-hz-dim": "1" },
+              "点色块改颜色，改完自动保存、立刻生效。只改底色时文字颜色会自动配成看得清的。" +
+                "「我发出的」是 DSH 自己的气泡，改的是全局样式。",
+            ),
+            colorRow("mine", "我发出的", "userBubble", "userText", "#e8eaed"),
+            colorRow("theirs", "DSH 回复的", "assistantBubble", "assistantText", "#eceff1"),
+          ),
+        );
 
         // --- cadence -------------------------------------------------------
         children.push(
@@ -2042,21 +2315,21 @@
         );
 
         // --- actions --------------------------------------------------------
+        // No save button: every control persists itself. The line below exists
+        // so "did it save?" is answerable without guessing.
         children.push(
           h(
             "div",
             { key: "actions", "data-hz-actions": "1" },
             h(
-              "button",
-              {
-                type: "button",
-                "data-hz-save": "1",
-                disabled: busy,
-                onClick: save,
-              },
-              busy ? "保存中…" : "保存",
+              "span",
+              { "data-hz-note": "1", "data-hz-dim": "1" },
+              error
+                ? "没有保存成功，改动不会生效。"
+                : busy
+                  ? "正在保存…"
+                  : note || "所有改动都会自动保存。",
             ),
-            note ? h("span", { "data-hz-note": "1", "data-hz-dim": "1", children: note }) : null,
           ),
         );
 

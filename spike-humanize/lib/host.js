@@ -22,6 +22,7 @@ const OUTPUT_DIR = join(PKG_DIR, ".spike-output");
 const OUTPUT_FILE = join(OUTPUT_DIR, "assistant.jsonl");
 const BOOT_FILE = join(OUTPUT_DIR, "host-boot.jsonl");
 const SEEN_FILE = join(OUTPUT_DIR, "sessions.jsonl");
+const SECTION_FILE = join(OUTPUT_DIR, "section-decisions.jsonl");
 
 const DEFAULT_CONFIG = {
   promptSection: true,
@@ -45,6 +46,15 @@ const DEFAULT_CONFIG = {
     // auto | on | off — "on" keeps the cadence even when the OS asks for
     // reduced motion ("off" does the opposite).
     motion: "auto",
+  },
+  // Bubble palette. `""` = keep the DSH default. The client turns these into
+  // CSS custom properties, so a save recolours already rendered bubbles
+  // without re-rendering them.
+  theme: {
+    userBubble: "",
+    userText: "",
+    assistantBubble: "",
+    assistantText: "",
   },
 };
 
@@ -183,8 +193,23 @@ export function apply(ctx) {
           const sessionId = sessionIdOf(context);
           noteSeen(context, sessionId);
           const current = config();
-          if (!isEnabled(sessionId)) return "";
-          return sectionTextOf(current);
+          const enabled = isEnabled(sessionId);
+          const text = enabled ? sectionTextOf(current) : "";
+          // One line per composed step. Without this the only way to answer
+          // "is the rule still in this session?" was asking the model, which
+          // cannot see our config and reads stale copies of the prompt out of
+          // its own history.
+          appendRecord(
+            {
+              ts: new Date().toISOString(),
+              sessionId: sessionId ?? null,
+              mode: current.scope.mode,
+              enabled,
+              chars: text.length,
+            },
+            SECTION_FILE,
+          );
+          return text;
         },
         interpolate: false,
       });
@@ -268,6 +293,7 @@ function sanitizeConfig(input) {
   const raw = input && typeof input === "object" ? input : {};
   const scope = raw.scope && typeof raw.scope === "object" ? raw.scope : {};
   const reveal = raw.reveal && typeof raw.reveal === "object" ? raw.reveal : {};
+  const theme = raw.theme && typeof raw.theme === "object" ? raw.theme : {};
 
   return {
     ...DEFAULT_CONFIG,
@@ -289,7 +315,20 @@ function sanitizeConfig(input) {
       buffer: reveal.buffer !== false,
       motion: MOTION_MODES.includes(reveal.motion) ? reveal.motion : "auto",
     },
+    theme: {
+      userBubble: colorIn(theme.userBubble),
+      userText: colorIn(theme.userText),
+      assistantBubble: colorIn(theme.assistantBubble),
+      assistantText: colorIn(theme.assistantText),
+    },
   };
+}
+
+/** Accepts only `#rrggbb` (what `<input type="color">` emits); anything else = default. */
+function colorIn(value) {
+  if (typeof value !== "string") return "";
+  const trimmed = value.trim().toLowerCase();
+  return /^#[0-9a-f]{6}$/.test(trimmed) ? trimmed : "";
 }
 
 function numberIn(value, fallback, min, max) {
@@ -405,8 +444,13 @@ function installConfigRoutes(ctx, config, log, warn) {
     const next = config.save({
       scope: patch && patch.scope,
       reveal: patch && patch.reveal,
+      theme: patch && patch.theme,
     });
-    log("config saved from settings page", { scope: next.scope, reveal: next.reveal });
+    log("config saved from settings page", {
+      scope: next.scope,
+      reveal: next.reveal,
+      theme: next.theme,
+    });
     reply(res, { ...snapshot(), saved: true });
   });
 

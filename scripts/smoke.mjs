@@ -227,12 +227,12 @@ async function testClient(mode) {
     },
     // draft, mirroring what `adopt()` would derive from the payload above
     {
-      enabled: true,
       sessions: ["session-abc123"],
       gap: 700,
       perChar: 9,
       buffer: true,
       motion: "auto",
+      theme: { userBubble: "", userText: "", assistantBubble: "", assistantText: "" },
     },
     null, // error
     "", // note
@@ -250,7 +250,20 @@ async function testClient(mode) {
     "a session without a title must still be selectable",
   );
   assert.ok(loadedJson.includes("700ms") && loadedJson.includes("9ms"), "sliders must show the live values");
-  assert.ok(loadedJson.includes("保存"), "the save button must be present");
+  // No save button: every control autosaves, and the page says so. The old
+  // page silently kept unchecking a session in local state until 保存 was
+  // pressed, which looked exactly like "unchecking does nothing".
+  assert.ok(!loadedJson.includes('"data-hz-save"'), "the page must not need a save button");
+  assert.ok(loadedJson.includes("自动保存"), "the page must say that changes apply instantly");
+  assert.ok(loadedJson.includes("全选"), "the session list must offer select-all");
+  assert.ok(
+    loadedJson.includes("当前：1 / 2 个会话生效"),
+    "the page must state how many sessions are actually live",
+  );
+  // Palette: two colour rows, each with a background and a text swatch.
+  assert.ok(loadedJson.includes('"data-hz-color":"userBubble"'), "user bubble colour picker");
+  assert.ok(loadedJson.includes('"data-hz-color":"assistantBubble"'), "assistant bubble colour picker");
+  assert.ok(loadedJson.includes("恢复默认"), "colours must be resettable");
   // The sliders must go high enough to be useful, and the preview must show the
   // real ceiling: a 1200ms cap used to swallow every setting above it.
   assert.ok(loadedJson.includes('"max":"3000"'), "the fixed-pause slider must reach 3000ms");
@@ -272,7 +285,7 @@ async function testClient(mode) {
       sessions: [{ id: "session-gone", shortId: "e-gone", title: null }],
       configFile: "C:/x/spike.config.json",
     },
-    { enabled: true, sessions: ["session-live1"], gap: 450, perChar: 6, buffer: true, motion: "auto" },
+    { sessions: ["session-live1"], gap: 450, perChar: 6, buffer: true, motion: "auto" },
     null,
     "",
     false,
@@ -362,6 +375,24 @@ async function testClient(mode) {
       node: { data: { status: "final", blocks: [{ kind: "tool-call" }] } },
     });
     assert.equal(onlyTool, null, "tool-call-only step must render nothing");
+
+    // A new turn starts while the previous reply is still pacing its bubbles:
+    // DSH queues the user's second message and opens turn 2 as soon as turn 1
+    // ends, so the old reveal must be retired or the two replies talk over
+    // each other.
+    const api = globalThis.window.__humanizeSpike;
+    entry.component({
+      node: { data: { turn: 5, step: 1, status: "final", blocks: [{ kind: "text", text: "旧的回复。" }] } },
+    });
+    const before = api.diag().reveals["5:1"];
+    assert.ok(before, "the reveal bookkeeping for turn 5 must exist");
+    assert.equal(before.done, false, "a finished reply that was watched streaming stays unplayed");
+    entry.component({ node: { data: { turn: 6, step: 1, status: "running", blocks: [] } } });
+    assert.equal(
+      api.diag().reveals["5:1"].done,
+      true,
+      "starting turn 6 must retire turn 5's pending reveal",
+    );
 
     // Reasoning is rebuilt as a <details> fold.
     const withReasoning = entry.component({
@@ -492,6 +523,16 @@ async function testHost() {
     captureSize = 0;
   }
 
+  // The section callback now appends one decision per composed step; those
+  // lines are test noise and must not accumulate in the real file.
+  const decisionPath = join(ROOT, "spike-humanize/.spike-output/section-decisions.jsonl");
+  let decisionSize = 0;
+  try {
+    decisionSize = statSync(decisionPath).size;
+  } catch {
+    decisionSize = 0;
+  }
+
   try {
     // --- scope.mode = off must be inert (fail-closed) -----------------------
     writeFileSync(
@@ -519,7 +560,8 @@ async function testHost() {
     const { apply } = await loadHost("?smoke=on");
     const sections = [];
     const listeners = [];
-    apply(fakeHostCtx(sections, listeners));
+    const routes = [];
+    apply(fakeHostCtx(sections, listeners, routes));
 
     assert.equal(sections.length, 1, "expected one prompt section");
     assert.equal(sections[0].name, "spike-humanize/segmentation");
@@ -595,13 +637,45 @@ async function testHost() {
       "sectionText override from config must win",
     );
 
-    console.log("  host: ok (scope gating + section + capture + hot sectionText)");
-  } finally {
+    // The settings page saves colours through the same route. The host must
+    // accept the block and drop anything that is not a #rrggbb (a stray value
+    // would end up verbatim in a CSS custom property).
+    const saveRoute = routes.find((route) => route.path === "/dsh-humanize/save");
+    assert.ok(saveRoute, "the save route must be registered");
+    const replies = [];
+    const body = JSON.stringify({
+      scope: { mode: "allowlist", sessions: [sessionId] },
+      theme: { userBubble: "#AABBCC", userText: "red", assistantBubble: "", assistantText: "#123456" },
+    });
+    await saveRoute.handler(
+      {
+        async *[Symbol.asyncIterator]() {
+          yield body;
+        },
+      },
+      {
+        writeHead() {},
+        end(payload) {
+          replies.push(JSON.parse(payload));
+        },
+      },
+    );
+    const savedTheme = replies.at(-1).config.theme;
+    assert.equal(savedTheme.userBubble, "#aabbcc", "a valid colour must be kept (lower-cased)");
+    assert.equal(savedTheme.userText, "", "anything that is not #rrggbb must fall back to default");
+    assert.equal(savedTheme.assistantText, "#123456", "the assistant palette must round-trip");
+
+    console.log("  host: ok (scope gating + section + capture + hot sectionText)");  } finally {
     writeFileSync(configPath, original, "utf8");
     try {
       truncateSync(capturePath, captureSize);
     } catch {
       // capture file may not exist yet; nothing to roll back
+    }
+    try {
+      truncateSync(decisionPath, decisionSize);
+    } catch {
+      // the decision log appears on the first composed step
     }
   }
 }
@@ -610,7 +684,7 @@ function loadHost(suffix) {
   return import(pathToFileURL(join(ROOT, "spike-humanize/lib/host.js")).href + suffix);
 }
 
-function fakeHostCtx(sections, listeners) {
+function fakeHostCtx(sections, listeners, routes = []) {
   return {
     logger: { info() {}, warn() {} },
     effect(fn) {
@@ -619,6 +693,12 @@ function fakeHostCtx(sections, listeners) {
     systemPrompt: {
       section(options) {
         sections.push(options);
+        return () => {};
+      },
+    },
+    webServer: {
+      register(options) {
+        routes.push(options);
         return () => {};
       },
     },
