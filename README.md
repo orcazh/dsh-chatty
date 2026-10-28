@@ -39,13 +39,13 @@ DeepSeek Harness（DSH）插件。默认**不生效**，只在你勾选的会话
 
 ## 安装
 
-在 DSH 的插件市场里搜 `dsh-chatty`，或手动：
+在 DSH 的插件市场里搜 `dsh-chatty` 安装，装完重启 DSH。新装默认**不生效**。
+
+命令行安装（等价于往 profile 里加一个依赖，需要本机装了 `dsh` CLI）：
 
 ```
-dsh plugin install dsh-chatty
+dsh plugin --profile desktop add dsh-chatty
 ```
-
-装完重启 DSH。新装默认**不生效**。
 
 ## 使用
 
@@ -89,7 +89,7 @@ dsh plugin install dsh-chatty
 在插件市场里卸载，或者：
 
 ```
-dsh plugin remove dsh-chatty
+dsh plugin --profile desktop remove dsh-chatty
 ```
 
 `~/.dsh/chatty/` 不会被自动删除，想清干净手动删掉即可。
