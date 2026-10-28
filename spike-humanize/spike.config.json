@@ -5,8 +5,10 @@
   "verbose": false,
   "sectionText": null,
   "scope": {
-    "mode": "off",
-    "sessions": []
+    "mode": "allowlist",
+    "sessions": [
+      "session-351816c0-61aa-4405-8593-75ac2145ccdd"
+    ]
   },
   "reveal": {
     "gap": 1300,
@@ -15,7 +17,7 @@
     "motion": "auto"
   },
   "theme": {
-    "userBubble": "",
+    "userBubble": "#3282fb",
     "userText": "",
     "assistantBubble": "",
     "assistantText": ""

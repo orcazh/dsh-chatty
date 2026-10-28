@@ -214,6 +214,27 @@
       //   tool-call -> nothing at all           (skipped, same as native)
       // Split on blank lines, but never inside a fenced code block: a fence may
       // contain blank lines and cutting it would destroy the snippet.
+      /**
+       * `dsh-meme` (installed on this machine) never renders anything itself:
+       * it rewrites the chat DOM — it finds `[表情: 描述]` text nodes, swaps them
+       * for an `<img data-meme-img>` inserted at the top of the message row, and
+       * hides the elements that are left empty. Its own scanner re-runs every
+       * ~300ms and re-decorates whenever React writes the text back.
+       *
+       * We render that text inside a bubble, so we cannot stop the plugin from
+       * toggling `display` on our node — but a bubble that holds *only* a marker
+       * is not something the reader should ever see. Mark it, and let a CSS rule
+       * hide it whenever the plugin actually managed to put an image in the row.
+       * Doing it in CSS (not inline style) matters: the plugin's cleanup writes
+       * `el.style.display = ''` back, which would undo an inline `display:none`
+       * on every scan — that is the flicker.
+       */
+      var MEME_MARKER_ONLY = /^\s*\[表情:[^\]]+\](?:\(\s*https?:\/\/[^\s)]+\s*\))?\s*$/;
+
+      function isMemeMarkerOnly(text) {
+        return MEME_MARKER_ONLY.test(String(text || ""));
+      }
+
       function splitParagraphs(text) {
         var source = String(text === null || text === undefined ? "" : text).replace(/\r\n/g, "\n");
         var lines = source.split("\n");
@@ -572,7 +593,13 @@
           style.id = TYPING_CSS_ID;
           style.textContent =
             "@keyframes spike-typing{0%,60%,100%{opacity:.25;transform:translateY(0)}30%{opacity:.9;transform:translateY(-2px)}}" +
-            "@media (prefers-reduced-motion:reduce){[data-spike='typing'] span{animation:none!important;opacity:.5!important}}";
+            "@media (prefers-reduced-motion:reduce){[data-spike='typing'] span{animation:none!important;opacity:.5!important}}" +
+            // `dsh-meme` moves the image it built to the first child of the
+            // message row. Only then does the marker bubble become invisible —
+            // if the plugin is missing or could not match the caption, the text
+            // stays visible, which is the honest fallback.
+            "[data-chat-flow-key]:has(>img[data-meme-img]) [data-hz-meme]," +
+            "[data-time-hover-root]:has(>img[data-meme-img]) [data-hz-meme]{display:none!important}";
           document.head.appendChild(style);
         } catch {
           // no DOM: the indicator simply stays static
@@ -674,16 +701,19 @@
             // re-flow on every token. Buffered mode hides it anyway.
             var parts = streaming ? [text] : splitParagraphs(text);
             for (var p = 0; p < parts.length; p++) {
+              var markerOnly = isMemeMarkerOnly(parts[p]);
+              var bubbleProps = {
+                key: "t" + key++,
+                "data-spike": "bubble",
+                style: BUBBLE_STYLE,
+                children: markdownOr(parts[p], false),
+              };
+              if (markerOnly) bubbleProps["data-hz-meme"] = "1";
               units.push({
                 bubble: true,
                 index: bubbleIndex++,
                 weight: parts[p].length,
-                node: jsx("div", {
-                  key: "t" + key++,
-                  "data-spike": "bubble",
-                  style: BUBBLE_STYLE,
-                  children: markdownOr(parts[p], false),
-                }),
+                node: jsx("div", bubbleProps),
               });
             }
             continue;
@@ -832,6 +862,9 @@
 
       function renderBubbles(props) {
         logPropsOnce(props);
+        // Idempotent; also installs the dsh-meme marker rule, which must exist
+        // even when no typing indicator is ever rendered.
+        ensureTypingCss();
 
         if (typeof props.sessionId === "string" && props.sessionId.length > 0) {
           lastSessionId = props.sessionId;

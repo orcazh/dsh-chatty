@@ -376,6 +376,32 @@ async function testClient(mode) {
     });
     assert.equal(onlyTool, null, "tool-call-only step must render nothing");
 
+    // `dsh-meme` writes `[表情: 描述]` into the reply and turns it into an image
+    // by rewriting the chat DOM. The paragraph that carries the marker must not
+    // be shown as a bubble of its own; it is marked so CSS can hide it once the
+    // plugin has actually produced an image in the row.
+    const memeNode = entry.component({
+      node: {
+        data: {
+          status: "final",
+          blocks: [{ kind: "text", text: "前一句。\n\n[表情: 得意闭眼拳头，好耶]\n\n后一句。" }],
+        },
+      },
+    });
+    const memeBubbles = memeNode.props.children;
+    assert.equal(memeBubbles.length, 3, "the marker is its own paragraph");
+    assert.equal(
+      memeBubbles[1].props["data-hz-meme"],
+      "1",
+      "a marker-only bubble must be marked so the meme plugin's image can replace it",
+    );
+    assert.ok(
+      !memeBubbles[0].props["data-hz-meme"] && !memeBubbles[2].props["data-hz-meme"],
+      "ordinary bubbles must not be marked",
+    );
+    // It is still real text: with no meme plugin (or no image) nothing hides it.
+    assert.ok(JSON.stringify(memeBubbles[1]).includes("表情"), "the marker text stays in the DOM");
+
     // A new turn starts while the previous reply is still pacing its bubbles:
     // DSH queues the user's second message and opens turn 2 as soon as turn 1
     // ends, so the old reveal must be retired or the two replies talk over
