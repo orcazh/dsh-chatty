@@ -15,7 +15,7 @@
 
 | 证据 | 内容 |
 | :--- | :--- |
-| `dsh-chatty/config.json` | `mode: "allowlist"`，白名单**包含** `session-351816c0-…` |
+| `~/.dsh/chatty/config.json` | `mode: "allowlist"`，白名单**包含** `session-351816c0-…` |
 | 该文件 mtime | `2026-10-27T13:14:27Z` —— 之后再没有任何一次写入 |
 | `~/.dsh/chatty/logs/sessions.jsonl` | 该会话最近一次记录 `enabled: true` |
 | 会话日志（`~/.dsh/sessions/…/session.v4.jsonl.zstd`，解压后 443 行） | `system/message` 共 4 条，出现在 turn 1 / 2 / 11 / 17；turn 2 / 11 / 17 的提示词里**确实含有**「【回复分段规范】」 |

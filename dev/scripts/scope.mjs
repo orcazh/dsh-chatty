@@ -18,7 +18,7 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const STATE_DIR = process.env.CHATTY_STATE_DIR ?? join(homedir(), ".dsh", "chatty");
 const CONFIG_FILE = join(STATE_DIR, "config.json");
 const LOG_DIR = join(STATE_DIR, "logs");

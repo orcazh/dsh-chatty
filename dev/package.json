@@ -1,0 +1,17 @@
+{
+  "name": "dsh-chatty-dev",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Development scripts and Phase 0 records for dsh-chatty (the plugin is the repo root)",
+  "scripts": {
+    "check": "node --check ../lib/host.js && node --check ../lib/client.js",
+    "smoke": "node scripts/smoke.mjs",
+    "verify": "node scripts/verify-mount.mjs",
+    "scope": "node scripts/scope.mjs",
+    "g2": "node scripts/g2-score.mjs",
+    "install:plugin": "node scripts/install.mjs",
+    "uninstall:plugin": "node scripts/uninstall.mjs",
+    "pack:check": "npm pack --dry-run ../"
+  }
+}

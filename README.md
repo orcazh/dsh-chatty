@@ -1,93 +1,103 @@
-# dsh-chatty — 开发工作区
+# dsh-chatty
 
-插件本体在 `dsh-chatty/`（可单独发布到 npm / DSH 插件市场）。
-这个目录是开发用的：脚本、Phase 0 的验证记录、调试工具。
+把 AI 的一条回复拆成几条消息、隔一会儿发一条，像人在聊天。
 
-用户文档见 [`dsh-chatty/README.md`](dsh-chatty/README.md)。
+DeepSeek Harness（DSH）插件。默认**不生效**，只在你勾选的会话里起作用。
 
-## 目录
+---
+
+## 它长什么样
+
+一条正常的回复：
+
+> 这个我查过了，图库里有 24 张，检索和分类都是通的。另外刚才那个报错是因为权限没给，改一下就行。你要是还想加功能，跟我说。
+
+装了这个插件之后：
+
+> 这个我查过了，图库里有 24 张。
+>
+> （停一会儿）
+>
+> 检索和分类都是通的。
+>
+> （停一会儿）
+>
+> 刚才那个报错是权限没给，改一下就行。
+
+段与段之间按「下一条有多少字」等一会儿，期间显示正在输入的三点。
+
+## 功能
+
+- **分条**：模型用空行分出的段落，每条变成一个独立气泡
+- **节奏可调**：固定停顿 + 每多一个字多等一点，两个滑杆
+- **只在选定会话生效**：设置页里勾选，其它会话完全保持 DSH 原样
+- **气泡配色**：自己发的和 AI 回的，底色/文字颜色都能改
+- **兼容表情包插件**（`dsh-meme`）：表情图出来后，下面那行 `[表情: …]` 会隐藏
+- **代码块 / 表格 / 列表**照常渲染，不会被切断
+
+## 安装
+
+在 DSH 的插件市场里搜 `dsh-chatty`，或手动：
 
 ```
-.
-├─ dsh-chatty/                ← 插件本体（发布内容）
-│  ├─ package.json
-│  ├─ cordis.patch.yml        ← 宿主半边挂载
-│  ├─ README.md               ← 给用户看的
-│  └─ lib/
-│     ├─ host.js              ← L2 提示词、配置路由、判定日志
-│     └─ client.js            ← 遮蔽 assistant-step、多气泡、设置页
-├─ scripts/
-│  ├─ install.mjs             ← link: 装进 desktop profile
-│  ├─ uninstall.mjs
-│  ├─ smoke.mjs               ← 离线契约测试
-│  ├─ verify-mount.mjs        ← 挂载结构自检
-│  ├─ scope.mjs               ← 命令行改会话作用域
-│  └─ g2-score.mjs            ← 给采样结果打分
-└─ docs/
-   ├─ RESULT-G1.md … G7       ← Phase 0 每个关口的结论
-   ├─ RESULT-cancel.md        ← 「取消勾选还生效」的排查记录
-   └─ COMPAT-dsh-meme.md      ← 与表情包插件的兼容处理
+dsh plugin install dsh-chatty
 ```
 
-## 常用命令
+装完重启 DSH。新装默认**不生效**。
 
-```powershell
-npm run check       # 语法检查
-npm run smoke       # 离线契约测试（用临时目录，不碰真实设置）
-npm run verify      # 挂载结构自检
-npm run install:plugin    # link: 装进 profile
-npm run uninstall:plugin
-npm run scope       # 看/改会话作用域
-```
+## 使用
 
-## 安装到本机（开发）
+1. 打开 **设置 → 拟人化输出**
+2. 在会话列表里勾上想让插件生效的会话（可以点「全选」）
+3. 拖两个滑杆调节奏：
+   - **固定停顿**：每条消息之间至少等多久（0–3000ms）
+   - **每多一个字**：下一条每多一个字再多等多久（0–60ms）
+4. 想改颜色，在「气泡配色」里点色块；只改底色时文字颜色会自动配成看得清的
 
-```powershell
-npm run install:plugin
-# 从托盘完全退出 DSH 再启动
-```
+所有改动**自动保存、立刻生效**，不需要点保存，也不需要重启。
 
-改 `lib/client.js` 或 `lib/host.js` 之后**必须从托盘退出重启**，`Ctrl+R` 不生效。
+把列表全部取消勾选 = 完全关闭，聊天界面回到 DSH 原样。
 
-## 运行时数据
-
-不在仓库里，也不在插件目录里：
+## 数据存在哪
 
 ```
 ~/.dsh/chatty/
-├─ config.json
-└─ logs/
-   ├─ host-boot.jsonl          每次宿主启动
-   ├─ client-boot.jsonl        每次浏览器半边加载成功
-   ├─ section-decisions.jsonl  每回合：sessionId / mode / enabled / chars
-   └─ sessions.jsonl           见过的会话 id
+├─ config.json    ← 设置（会话白名单、节奏、配色）
+└─ logs/          ← 诊断日志
 ```
 
-`section-decisions.jsonl` 是排查「到底生效没有」的唯一可信来源：
+日志里有：每次启动、每次组装提示词时「这个会话到底注入了没有」、
+以及（默认关闭的）回复捕获。**默认不保存回复正文**。
+文件超过 2MB 会自动清空。
 
-```jsonl
-{"sessionId":"session-…","mode":"allowlist","enabled":true,"chars":312}
-{"sessionId":"session-…","mode":"off","enabled":false,"chars":0}
+插件本身不发任何外部网络请求。
+
+## 已知边界
+
+- **不改变模型说话的内容**，只加一段「用短段落」的排版提示；
+- 提示词是按轮的：关掉之后，**之前那些轮的提示词副本仍留在会话历史里**，
+  模型可能还会顺着前几轮的短段风格写一两轮。想立刻看到差别，开个新会话；
+- 历史消息不会重播动画，刷新后直接整段显示；
+- 思考过程折叠成「思考过程」小条，工具调用那一行不渲染；
+- 带 `dsh-meme` 的表情包：图的位置由它放在消息行顶部，插件只负责把
+  多余的说明文字藏起来。
+
+## 卸载
+
+在插件市场里卸载，或者：
+
+```
+dsh plugin remove dsh-chatty
 ```
 
-`captureAssistant`（默认关闭）打开时才写 `assistant.jsonl`（回复正文，给 G2 打分用）。
+`~/.dsh/chatty/` 不会被自动删除，想清干净手动删掉即可。
 
-## 调试入口
+## 兼容性
 
-浏览器控制台：
+- DSH `0.2.1-rc.2` 及以上
+- Node `>= 22.13.0`
+- 只在桌面版 / Web 版客户端生效（`dsh.client.platform: web`）
 
-```js
-__chatty.diag()          // 当前模式、节奏、作用域、palette、reveal 状态
-__chatty.setMode('bubbles' | 'pass' | 'probe' | 'off')
-__chatty.scoped.watching // 正在监视的会话
-```
+## 许可
 
-## 发布前检查
-
-```
-npm run check && npm run smoke && npm run verify
-npm run pack:check        # 确认 tarball 里没有 config.json / logs
-```
-
-发布清单（`package.json` 七个字段、失败模式）见
-[`docs/RESULT-G5.md`](docs/RESULT-G5.md)。
+MIT

@@ -23,7 +23,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 // The host keeps its config and logs in the user's home. Point it at a
 // throwaway directory BEFORE importing it, so a smoke run can never clobber the
 // real settings or leave fake samples in the real logs.
@@ -139,7 +139,7 @@ async function testClient(mode) {
   // renderer tests do not depend on the network (and so no retry ladder runs).
   globalThis.fetch = () => new Promise(() => {});
 
-  await import(pathToFileURL(join(ROOT, "dsh-chatty/lib/client.js")).href + "?mode=" + mode);
+  await import(pathToFileURL(join(ROOT, "lib/client.js")).href + "?mode=" + mode);
 
   assert.ok(globalThis.__loaded, "client did not call __ModuleLoader__.load");
   assert.equal(globalThis.__loaded.id, "dsh-chatty");
@@ -732,7 +732,7 @@ async function testHost() {
 }
 
 function loadHost(suffix) {
-  return import(pathToFileURL(join(ROOT, "dsh-chatty/lib/host.js")).href + suffix);
+  return import(pathToFileURL(join(ROOT, "lib/host.js")).href + suffix);
 }
 
 function fakeHostCtx(sections, listeners, routes = []) {
@@ -784,7 +784,7 @@ async function testRemoteConfig() {
     });
   };
 
-  await import(pathToFileURL(join(ROOT, "dsh-chatty/lib/client.js")).href + "?remote=1");
+  await import(pathToFileURL(join(ROOT, "lib/client.js")).href + "?remote=1");
 
   const module = globalThis.__loaded.factory(fakeRequire);
   const slots = makeSlots();

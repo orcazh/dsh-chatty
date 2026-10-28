@@ -24,9 +24,9 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const PLUGIN_NAME = "dsh-chatty";
-const PLUGIN_DIR = join(ROOT, PLUGIN_NAME);
+const PLUGIN_DIR = ROOT;
 const PROFILE_DIR = process.env.DSH_PROFILE_DIR ?? join(homedir(), ".dsh", "profiles", "desktop");
 const PROFILE_PKG = join(PROFILE_DIR, "package.json");
 
