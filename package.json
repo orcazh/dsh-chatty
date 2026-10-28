@@ -13,6 +13,15 @@
     "typing"
   ],
   "license": "MIT",
+  "author": "orcazh",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/orcazh/dsh-chatty.git"
+  },
+  "homepage": "https://github.com/orcazh/dsh-chatty#readme",
+  "bugs": {
+    "url": "https://github.com/orcazh/dsh-chatty/issues"
+  },
   "main": "lib/host.js",
   "files": [
     "lib/",
