@@ -1,34 +1,44 @@
 /**
- * Phase 0 probe — host half.
+ * dsh-chatty — host half.
  *
- * Purpose:
- *  - prove a third-party plugin can load in the desktop profile
- *  - inject the L2 paragraph-guidance system prompt section (G2)
- *  - capture final assistant messages to JSONL for offline metric scoring (G2)
+ *  - injects the L2 paragraph-guidance system prompt section (per session)
+ *  - captures final assistant messages to JSONL (offline metric scoring)
+ *  - publishes the config the settings page reads and writes
+ *  - records per-turn section decisions so "is it on?" is a file read, not a
+ *    question to the model
  *
- * Scope (FR-12 preview): the probe is INERT by default. Nothing is injected,
- * nothing is captured, unless `scope.mode` allows the current session.
- *
- * This is throwaway code. Do not build product features on it.
+ * Scope: INERT by default. Nothing is injected, nothing is captured, unless
+ * `scope.mode` allows the current session (fail-closed).
  */
 
-import { appendFileSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, statSync, truncateSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const PKG_DIR = dirname(dirname(fileURLToPath(import.meta.url)));
-const CONFIG_FILE = join(PKG_DIR, "spike.config.json");
-const OUTPUT_DIR = join(PKG_DIR, ".spike-output");
+// Settings and diagnostics live in the user's home, NOT in the package: a
+// marketplace install puts this package inside `node_modules`, which pnpm
+// replaces on every update — settings written there would disappear on update,
+// and a published tarball must never carry somebody's session ids.
+const STATE_DIR = process.env.CHATTY_STATE_DIR || join(homedir(), ".dsh", "chatty");
+const CONFIG_FILE = join(STATE_DIR, "config.json");
+const OUTPUT_DIR = join(STATE_DIR, "logs");
 const OUTPUT_FILE = join(OUTPUT_DIR, "assistant.jsonl");
 const BOOT_FILE = join(OUTPUT_DIR, "host-boot.jsonl");
 const SEEN_FILE = join(OUTPUT_DIR, "sessions.jsonl");
 const SECTION_FILE = join(OUTPUT_DIR, "section-decisions.jsonl");
 const CLIENT_FILE = join(OUTPUT_DIR, "client-boot.jsonl");
+// Diagnostics are append-only; without a cap they grow for the life of the
+// install (one line per boot, per composed step, per captured reply).
+const LOG_MAX_BYTES = 2 * 1024 * 1024;
 
 const DEFAULT_CONFIG = {
   promptSection: true,
   sectionOrder: 900,
-  captureAssistant: true,
+  // Off by default: it writes full reply bodies to a local JSONL. Only the G2
+  // sampler needs it, and FR-10 says logs must not carry message bodies.
+  captureAssistant: false,
   verbose: false,
   // Overrides SECTION_TEXT_LINES when set (string or array of lines). Read per
   // turn, so prompt tuning needs no DSH restart — only a config save.
@@ -39,7 +49,7 @@ const DEFAULT_CONFIG = {
     sessions: [],
   },
   // FR-1 cadence. Owned by the settings page, read by the browser half.
-  // `.spike.config.json` is the single source of truth for both halves.
+  // `.config.json` is the single source of truth for both halves.
   reveal: {
     gap: 450,
     perChar: 6,
@@ -78,10 +88,10 @@ const SECTION_TEXT_LINES = [
 
 const SECTION_TEXT = SECTION_TEXT_LINES.join("\n");
 
-export const name = "spike-humanize";
+export const name = "dsh-chatty";
 
 // `systemPrompt` is where the L2 section goes; `webServer` carries the config
-// channel the browser half reads (`/dsh-humanize/*`). Both are optional at the
+// channel the browser half reads (`/dsh-chatty/*`). Both are optional at the
 // call site — a deployment without them degrades to a file-only config.
 export const inject = ["systemPrompt", "webServer"];
 
@@ -89,12 +99,12 @@ export function apply(ctx) {
   const config = createConfigReader();
 
   const log = (...args) => {
-    if (ctx.logger?.info) ctx.logger.info("[spike-humanize]", ...args);
-    else console.log("[spike-humanize]", ...args);
+    if (ctx.logger?.info) ctx.logger.info("[dsh-chatty]", ...args);
+    else console.log("[dsh-chatty]", ...args);
   };
   const warn = (...args) => {
-    if (ctx.logger?.warn) ctx.logger.warn("[spike-humanize]", ...args);
-    else console.warn("[spike-humanize]", ...args);
+    if (ctx.logger?.warn) ctx.logger.warn("[dsh-chatty]", ...args);
+    else console.warn("[dsh-chatty]", ...args);
   };
 
   const initial = config();
@@ -187,7 +197,7 @@ export function apply(ctx) {
       }
 
       return ctx.systemPrompt.section({
-        name: "spike-humanize/segmentation",
+        name: "dsh-chatty/segmentation",
         order: current.sectionOrder,
         // Dynamic text: empty string means "no section content this turn".
         text: (context) => {
@@ -215,7 +225,7 @@ export function apply(ctx) {
         interpolate: false,
       });
     },
-    "spike-humanize: L2 section",
+    "dsh-chatty: L2 section",
   );
 
   // --- G2: capture final assistant messages --------------------------------
@@ -301,7 +311,7 @@ function sanitizeConfig(input) {
     ...raw,
     promptSection: raw.promptSection !== false,
     sectionOrder: numberIn(raw.sectionOrder, DEFAULT_CONFIG.sectionOrder, 0, 10000),
-    captureAssistant: raw.captureAssistant !== false,
+    captureAssistant: raw.captureAssistant === true,
     verbose: raw.verbose === true,
     sectionText: raw.sectionText ?? null,
     scope: {
@@ -339,7 +349,7 @@ function numberIn(value, fallback, min, max) {
 }
 
 /**
- * Reads spike.config.json, re-parsing only when the file changes.
+ * Reads config.json, re-parsing only when the file changes.
  * `save(patch)` writes the merged result back and refreshes the cache in the
  * same call, so a save never races the mtime check.
  */
@@ -381,7 +391,7 @@ function createConfigReader() {
 }
 
 /**
- * Publishes `/dsh-humanize/state` (read) and `/dsh-humanize/save` (write).
+ * Publishes `/dsh-chatty/state` (read) and `/dsh-chatty/save` (write).
  * Registered through `ctx.effect` so unloading the plugin removes the routes.
  */
 function installConfigRoutes(ctx, config, log, warn) {
@@ -436,12 +446,12 @@ function installConfigRoutes(ctx, config, log, warn) {
     }
   };
 
-  route("/dsh-humanize/state", async (req, res) => reply(res, snapshot()));
+  route("/dsh-chatty/state", async (req, res) => reply(res, snapshot()));
 
   // G5 liveness: one line per browser half that actually materialised. Read
-  // `.spike-output/client-boot.jsonl` after a restart to tell "the client half
+  // `~/.dsh/chatty/logs/client-boot.jsonl` after a restart to tell "the client half
   // did not load" apart from "it loaded but did nothing".
-  route("/dsh-humanize/ping", async (req, res) => {
+  route("/dsh-chatty/ping", async (req, res) => {
     const body = await readBody(req);
     appendRecord(
       {
@@ -456,7 +466,7 @@ function installConfigRoutes(ctx, config, log, warn) {
     reply(res, { ok: true });
   });
 
-  route("/dsh-humanize/save", async (req, res) => {
+  route("/dsh-chatty/save", async (req, res) => {
     const patch = await readBody(req);
     // Only the two blocks the settings page owns are accepted off the wire;
     // prompt text and capture flags stay file-only on purpose.
@@ -473,7 +483,7 @@ function installConfigRoutes(ctx, config, log, warn) {
     reply(res, { ...snapshot(), saved: true });
   });
 
-  log("config routes ready: /dsh-humanize/state, /dsh-humanize/save");
+  log("config routes ready: /dsh-chatty/state, /dsh-chatty/save");
 }
 
 /**
@@ -483,7 +493,7 @@ function installConfigRoutes(ctx, config, log, warn) {
  * which is exactly what the sidebar shows and carries real titles. This host
  * list exists for the case where that catalog is unavailable.
  *
- * Deliberately no `.spike-output/sessions.jsonl` fallback: that log is
+ * Deliberately no `logs/sessions.jsonl` fallback: that log is
  * append-only, so it accumulates every session the probe ever saw — including
  * ones deleted long ago — and none of them have titles. It produced a settings
  * page full of "没有标题的会话".
@@ -553,8 +563,13 @@ function safeService(ctx, name) {
 function appendRecord(record, file = OUTPUT_FILE) {
   try {
     mkdirSync(OUTPUT_DIR, { recursive: true });
+    try {
+      if (statSync(file).size > LOG_MAX_BYTES) truncateSync(file, 0);
+    } catch {
+      // file does not exist yet
+    }
     appendFileSync(file, JSON.stringify(record) + "\n", "utf8");
   } catch (error) {
-    console.warn("[spike-humanize] capture failed:", error);
+    console.warn("[dsh-chatty] capture failed:", error);
   }
 }

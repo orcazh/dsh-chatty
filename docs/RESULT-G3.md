@@ -6,7 +6,7 @@
 
 > 实机确认项：设置页出现在 DSH 设置左侧；能读到当前配置；没有「连不上宿主」
 > （相对路径 `fetch` 在 `dsh-app://` 页面下可达宿主）；滑杆改动保存后立即生效；
-> 存在 `[spike-humanize] host config applied {...}` 日志；气泡照常逐条出现。
+> 存在 `[dsh-chatty] host config applied {...}` 日志；气泡照常逐条出现。
 >
 > 验收时修掉的三个问题（都已回归）：会话列表曾列出 20+ 个早已删除的无标题会话
 > （宿主 jsonl 兜底所致）、`default workspace` 空会话占位混进列表、
@@ -43,7 +43,7 @@ export const inject = ["systemPrompt", "webServer"];
 ctx.effect(() =>
   ctx.webServer.register({
     kind: "exact",            // exact | prefix
-    path: "/dsh-humanize/state",
+    path: "/dsh-chatty/state",
     handler: async (req, res) => { /* JSON */ },
   }),
 );
@@ -52,8 +52,8 @@ ctx.effect(() =>
 **客户端半边**
 
 ```js
-fetch("/dsh-humanize/state", { cache: "no-store" })   // 读
-fetch("/dsh-humanize/save", { method: "POST", ... })  // 写
+fetch("/dsh-chatty/state", { cache: "no-store" })   // 读
+fetch("/dsh-chatty/save", { method: "POST", ... })  // 写
 ```
 
 要点：
@@ -68,13 +68,13 @@ fetch("/dsh-humanize/save", { method: "POST", ... })  // 写
 
 | 方法 | 路径 | 用途 |
 | :--- | :--- | :--- |
-| GET/POST | `/dsh-humanize/state` | 返回 `{ ok, config, sessions[], configFile }` |
-| POST | `/dsh-humanize/save` | 只接受 `scope` / `reveal` / `theme` 三块，合并写回 `spike.config.json` |
+| GET/POST | `/dsh-chatty/state` | 返回 `{ ok, config, sessions[], configFile }` |
+| POST | `/dsh-chatty/save` | 只接受 `scope` / `reveal` / `theme` 三块，合并写回 `config.json` |
 
 `sessions[]` 由宿主 `sessions.list()` + `sessionTitle.get()` 组装，
 拿不到标题就退回 `…<id 后 6 位>`。
 
-> 早期版本在这里用 `.spike-output/sessions.jsonl` 兜底，**已删除**：那是探针历史上
+> 早期版本在这里用 `~/.dsh/chatty/logs/sessions.jsonl` 兜底，**已删除**：那是探针历史上
 > 见过的所有 id 的追加日志，早删掉的会话也在里面，而且都没有标题。
 
 `save` **只收这三块**，是有意的：提示词正文（`sectionText`）和捕获开关
@@ -130,7 +130,7 @@ declaredBy: an entry in 'sidebar.settings' (client-ui-settings-general)
 
 第一版设置页列了 20 多个「没有标题的会话」，而用户实际只有 3 个会话。
 根因在**宿主的兜底**：`sessions.list()` 太薄时会去读
-`.spike-output/sessions.jsonl`——那是探针历史上见过的所有 id 的追加日志，
+`~/.dsh/chatty/logs/sessions.jsonl`——那是探针历史上见过的所有 id 的追加日志，
 早就删掉的会话也在里面，而且都没有标题。
 
 现在改成：**优先读客户端 `sessions.list` 快照**（设置页和侧栏在同一个 JS 上下文）。
@@ -169,7 +169,7 @@ byId[id] = {
 
 ## 启动即自动生效
 
-客户端 `apply()` 末尾读一次 `/dsh-humanize/state`：
+客户端 `apply()` 末尾读一次 `/dsh-chatty/state`：
 
 - `scope.mode === "allowlist"` 且会话非空 → `scopedWatchMany(ids)`
 - `scope.mode === "off"` 或会话为空 → 什么都不挂
@@ -194,7 +194,7 @@ byId[id] = {
 
 | 检查项 | 结果 |
 | :--- | :--- |
-| 配置存文件，重启后保持 | 是（`spike.config.json`，宿主唯一真源） |
+| 配置存文件，重启后保持 | 是（`config.json`，宿主唯一真源） |
 | 客户端启动读到宿主配置 | 是（实机：`host config applied` + 自动在选定会话生效） |
 | 保存后立即生效，无需重启 | 是（实机：拖动滑杆保存后节奏立刻改变） |
 | 页面 origin 能到达宿主路由 | 是（相对路径 `fetch` 在实机可用） |
@@ -208,7 +208,7 @@ byId[id] = {
 新增 `client/remote`：
 用假的 `fetch` 返回一份 allowlist 配置，断言
 
-- 启动时确实请求了 `/dsh-humanize/state`
+- 启动时确实请求了 `/dsh-chatty/state`
 - 根 slot 注册仍然 `off`（不是全局常开）
 - `reveal.gap / perChar` 被应用到运行时
 - `scoped.watching` 等于白名单，但 `scoped.attached` 为空

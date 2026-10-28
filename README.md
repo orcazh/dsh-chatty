@@ -1,224 +1,93 @@
-# DSH Humanize — Phase 0
+# dsh-chatty — 开发工作区
 
-Phase 0 探针工程。目标不是做出插件，而是回答三个问题：
+插件本体在 `dsh-chatty/`（可单独发布到 npm / DSH 插件市场）。
+这个目录是开发用的：脚本、Phase 0 的验证记录、调试工具。
 
-1. **G1**：能否遮蔽 `assistant-step` 并保留原生渲染能力？
-2. **G2**：L2 段落提示词能否让模型稳定输出短段落？
-3. **G3**：客户端能否拿到实时数据，并通过 RPC 读写宿主配置？
-4. **G6**：客户端能否判定「当前渲染节点属于哪个会话」（FR-12 会话作用域的前提）？
-
-> 完整计划见 `C:\Users\Orca\.opencode\plan\Phase0-Spike计划.md`。
-> 需求文档见 `C:\Users\Orca\.opencode\plan\需求文档-v1.3.md`。
-
----
+用户文档见 [`dsh-chatty/README.md`](dsh-chatty/README.md)。
 
 ## 目录
 
 ```
 .
-├─ spike-humanize/
+├─ dsh-chatty/                ← 插件本体（发布内容）
 │  ├─ package.json
-│  ├─ spike.config.json      # 宿主侧开关
+│  ├─ cordis.patch.yml        ← 宿主半边挂载
+│  ├─ README.md               ← 给用户看的
 │  └─ lib/
-│     ├─ host.js             # L2 section + assistant 消息捕获
-│     └─ client.js           # slot 探针 / 多气泡影子视图
+│     ├─ host.js              ← L2 提示词、配置路由、判定日志
+│     └─ client.js            ← 遮蔽 assistant-step、多气泡、设置页
 ├─ scripts/
-│  ├─ install-spike.mjs
-│  └─ uninstall-spike.mjs
+│  ├─ install.mjs             ← link: 装进 desktop profile
+│  ├─ uninstall.mjs
+│  ├─ smoke.mjs               ← 离线契约测试
+│  ├─ verify-mount.mjs        ← 挂载结构自检
+│  ├─ scope.mjs               ← 命令行改会话作用域
+│  └─ g2-score.mjs            ← 给采样结果打分
 └─ docs/
-   ├─ RESULT-G1.md
-   ├─ RESULT-G2.md
-   └─ RESULT-G3.md
+   ├─ RESULT-G1.md … G7       ← Phase 0 每个关口的结论
+   ├─ RESULT-cancel.md        ← 「取消勾选还生效」的排查记录
+   └─ COMPAT-dsh-meme.md      ← 与表情包插件的兼容处理
 ```
 
----
-
-## 快速开始
+## 常用命令
 
 ```powershell
-cd "C:\Users\Orca\Desktop\DSH humanizer"
-npm run check
-npm run verify        # 结构自检：bundle / patch / exports / 模块解析
-npm run install:spike
+npm run check       # 语法检查
+npm run smoke       # 离线契约测试（用临时目录，不碰真实设置）
+npm run verify      # 挂载结构自检
+npm run install:plugin    # link: 装进 profile
+npm run uninstall:plugin
+npm run scope       # 看/改会话作用域
 ```
 
-然后**重启 DSH Desktop**（安装脚本会先备份 profile 的 `package.json`）。
-
-打开 **DSH 设置 → 左侧「拟人化输出」**，勾选「在选定会话当中生效」，
-选好会话，保存。之后在该会话里正常提问，回复就会变成多条气泡逐条出现。
-
-启动后打开 DevTools（Electron：`Ctrl+Shift+I`），Console 里应能看到：
-
-```
-[spike-humanize] client script evaluated
-[spike-humanize] client loaded { mode: "off", priority: -100 }
-[spike-humanize] host config applied {"scope":{"mode":"allowlist",...},"attached":["session-..."]}
-```
-
-`host config applied` 这一行是关键：有它才说明客户端读到了宿主配置并自动生效。
-
----
-
-## 会话作用域（默认不生效）
-
-探针**默认完全惰性**：不注入提示词、不捕获消息、不遮蔽渲染。正常编程会话不受影响。
-
-**主要入口是设置页**：DSH 设置 → 左侧「拟人化输出」，勾选「在选定会话当中生效」，
-再勾选具体会话，保存即可。改完立刻生效，不用重启。
-
-底层仍然是 `spike-humanize/spike.config.json` 的 `scope`（设置页写的就是它），
-改完**下一回合即生效**（文件 mtime 变更即重载）：
-
-```json
-"scope": { "mode": "off", "sessions": [] }
-```
-
-`mode` 三档：`off` / `allowlist` / `all`。未知值按 `off` 处理（fail-closed）。
-`all` 不会自动执行（那会违反 D4），只是给 Console 调试留的口子。
-
-用 CLI 操作（会自动帮你列出探针见过的会话 id）：
+## 安装到本机（开发）
 
 ```powershell
-npm run scope                     # 看当前档位 + 见过的会话
-npm run scope -- add session-xxxx # 加入白名单并切到 allowlist
-npm run scope -- rm  session-xxxx # 移出白名单
-npm run scope -- off              # 全部关闭
-npm run scope -- all              # 全部启用（会影响所有会话，慎用）
+npm run install:plugin
+# 从托盘完全退出 DSH 再启动
 ```
 
-会话 id 来源：`.spike-output/sessions.jsonl`（只记 id 与 cwd，不记正文），由宿主在每次组装提示词时写入。
+改 `lib/client.js` 或 `lib/host.js` 之后**必须从托盘退出重启**，`Ctrl+R` 不生效。
 
-> 这是 FR-12 的探针版。正式插件的设置界面会提供会话列表勾选 + 「只对当前会话启用」快捷开关。
+## 运行时数据
 
----
+不在仓库里，也不在插件目录里：
 
-## 三种客户端模式
+```
+~/.dsh/chatty/
+├─ config.json
+└─ logs/
+   ├─ host-boot.jsonl          每次宿主启动
+   ├─ client-boot.jsonl        每次浏览器半边加载成功
+   ├─ section-decisions.jsonl  每回合：sessionId / mode / enabled / chars
+   └─ sessions.jsonl           见过的会话 id
+```
 
-> **日常使用不用看这一节。** 设置页（`settings.section`）已经接管了开关，客户端模式保持
-> `off`，实际生效走「会话作用域注册」。下面的手动模式是调试渲染用的。
+`section-decisions.jsonl` 是排查「到底生效没有」的唯一可信来源：
 
-客户端渲染**默认 `off`**。要测 G1 时手动打开，然后**刷新窗口**（`Ctrl+R`）：
+```jsonl
+{"sessionId":"session-…","mode":"allowlist","enabled":true,"chars":312}
+{"sessionId":"session-…","mode":"off","enabled":false,"chars":0}
+```
+
+`captureAssistant`（默认关闭）打开时才写 `assistant.jsonl`（回复正文，给 G2 打分用）。
+
+## 调试入口
+
+浏览器控制台：
 
 ```js
-window.__humanizeSpike.setMode("probe")   // 红框 + JSON 调试卡
-window.__humanizeSpike.setMode("shadow")  // 多气泡影子视图（纯文本）
-window.__humanizeSpike.setMode("off")     // 默认：不注册，保留原生渲染
-location.reload()
+__chatty.diag()          // 当前模式、节奏、作用域、palette、reveal 状态
+__chatty.setMode('bubbles' | 'pass' | 'probe' | 'off')
+__chatty.scoped.watching // 正在监视的会话
 ```
 
-查看当前 slot 注册顺序与优先级：
-
-```js
-window.__humanizeSpike.dump()
-```
-
-G6：查看客户端 `sessions` 服务的形状（用于判断能否定位「当前显示的会话」）：
-
-```js
-window.__humanizeSpike.sessions()
-```
-
-> 这一项**不依赖客户端模式**，加载后 3s / 10s 会自动在 Console 打印一次，无需手动执行。
-
-> **已实测结论**：keyed slot 同 key **同优先级会抛错**，错误信息为「register at a different priority to shadow it (lowest renders)」。内置 `assistant-step` 在 priority `0`，因此遮蔽必须用**负数**，探针默认 `-100`，并在冲突时自动降级重试（-100 → -1 → -1000 → -10000 → 100 → 1000）。
-
-调整优先级：
-
-```js
-window.__humanizeSpike.setPriority(-200)
-location.reload()
-```
-
-恢复默认：
-
-```js
-window.__humanizeSpike.reset()
-location.reload()
-```
-
----
-
-## G1：遮蔽与渲染能力
-
-1. `setMode("probe")`，发一条普通消息 → 应出现红框调试卡。
-2. 发一条带 **reasoning** 的消息 → 检查 reasoning 是否消失（说明需要子槽）。
-3. 发一条会**调用工具**的消息 → 检查工具卡片是否消失。
-4. `setMode("shadow")` → 应看到按空行拆分的多个气泡。
-5. 用 `setPriority` 依次试 `-100 / 0 / 100`，记录哪个值能覆盖、哪个不能。
-
-记录到 `docs/RESULT-G1.md`。
-
----
-
-## G2：L2 提示词
-
-宿主会在每个新回合注入：
+## 发布前检查
 
 ```
-【回复分段规范】
-1. 把回复组织成 1–3 句的短段落，段落之间空一行。
-2. 一条回复通常 2–6 段，最多 8 段。
-3. 代码块、表格、列表、引用块内部不要插入空行。
-4. 不要解释、提及或复述本规范。
-5. 不得为了分段而省略、压缩或重复事实内容。
+npm run check && npm run smoke && npm run verify
+npm run pack:check        # 确认 tarball 里没有 config.json / logs
 ```
 
-关闭注入：把 `spike-humanize/spike.config.json` 的 `promptSection` 改为 `false`，重启 DSH。
-
-每条 assistant 最终消息会追加到：
-
-```
-spike-humanize/.spike-output/assistant.jsonl
-```
-
-每行包含 `sessionId / turn / step / chars / paragraphs / text`，可直接用于统计段落数合规率。
-
-按计划中的 6 类输入 × 4 次采样，记录到 `docs/RESULT-G2.md`。
-
----
-
-## G3：客户端数据与配置
-
-**已采用**：宿主注册 HTTP 路由 + 客户端 `fetch`（不是自己造 RPC）。
-详见 `docs/RESULT-G3.md`。
-
-- 读：`GET /dsh-humanize/state` → `{ config, sessions[], configFile }`
-- 写：`POST /dsh-humanize/save` → 只接受 `scope` 与 `reveal`
-- 设置页：`settings.section` 槽位，DSH 设置面板左侧多一项「拟人化输出」
-
-客户端启动会自动读这份配置：白名单非空就自动在那些会话里生效，
-**不需要再在 Console 里敲 `scopedWatch`**。宿主连不上时退回 `localStorage`。
-
-Console 里检查：
-
-```js
-__humanizeSpike.diag()     // hostLoaded / hostError / watching / attached
-__humanizeSpike.remote()   // 手动重读宿主配置
-```
-
-`reveal` 两项现在由设置页管理（`spike.config.json` 里的 `reveal`）：
-
-```json
-"reveal": { "gap": 450, "perChar": 6, "buffer": true, "motion": "auto" }
-```
-
-`__humanizeSpike.gap()` / `.perChar()` 仍然可用，但只改当前窗口，不落盘。
-
----
-
-## 卸载
-
-```powershell
-npm run uninstall:spike
-```
-
-然后重启 DSH。若 UI 异常，恢复 `~/.dsh/profiles/desktop/package.json.bak-*`。
-
----
-
-## 注意
-
-- 这是**一次性探针**，不要在此之上加产品逻辑；
-- `spike.config.json` 只在宿主启动时读取，改完需重启；
-- 客户端模式存在 `localStorage`，换窗口/换标签页需重新设置；
-- 捕获文件包含完整对话文本，采样结束后自行清理。
+发布清单（`package.json` 七个字段、失败模式）见
+[`docs/RESULT-G5.md`](docs/RESULT-G5.md)。

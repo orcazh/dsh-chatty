@@ -17,8 +17,8 @@
 
 ## 判定方法
 
-不靠肉眼：客户端半边 `apply()` 会 POST `/dsh-humanize/ping`，
-宿主追加到 `.spike-output/client-boot.jsonl`。**没有新的一行 = 浏览器半边没加载。**
+不靠肉眼：客户端半边 `apply()` 会 POST `/dsh-chatty/ping`，
+宿主追加到 `~/.dsh/chatty/logs/client-boot.jsonl`。**没有新的一行 = 浏览器半边没加载。**
 
 实测记录（四次重启）：
 
@@ -50,7 +50,7 @@ Failed plugins (1):
     Package: @deepseek-ai/dsh-client-modules
     AggregateError: client-modules: 1 client package failed to compose:
       other failures:
-        - client-modules: spike-humanize declares dsh.client but exports no "./client" bundle
+        - client-modules: dsh-chatty declares dsh.client but exports no "./client" bundle
 ```
 
 原因：`dsh-client-modules` 的 `resolveMeta()` 是**抛错**的（不是跳过），
@@ -80,7 +80,7 @@ Failed plugins (1):
 | | |
 | :--- | :--- |
 | 计划期望 | 安装 / 启动被拒绝 |
-| 实际 | **启动完全正常**；插件列表「已安装」里 spike-humanize 显示为**异常** |
+| 实际 | **启动完全正常**；插件列表「已安装」里 dsh-chatty 显示为**异常** |
 
 源码核对：兼容性检查在 `@deepseek-ai/dsh-plugin-manager` 的 `listBundles()` 里，
 拒绝方式是 `ManagementFailure("incompatible-version", …)`，
@@ -100,7 +100,7 @@ Failed plugins (1):
 
 两个原因：
 
-1. 本机是 `link:` 安装，`scripts/install-spike.mjs` 只写 `package.json` 和目录联接，
+1. 本机是 `link:` 安装，`scripts/install.mjs` 只写 `package.json` 和目录联接，
    **不跑 pnpm**，没有依赖解析这一步；
 2. 客户端的 `require("react")` 走的是 DSH 客户端模块系统的 `external` 映射，
    和 `peerDependencies` 无关。

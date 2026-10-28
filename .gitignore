@@ -1,4 +1,7 @@
 node_modules/
-.spike-output/
 *.log
 .DS_Store
+
+# dsh-chatty keeps its settings and logs in ~/.dsh/chatty/, not here
+dsh-chatty/config.json
+dsh-chatty/*.tgz

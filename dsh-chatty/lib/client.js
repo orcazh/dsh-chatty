@@ -1,7 +1,7 @@
 /**
  * Phase 0 probe — client half.
  *
- * Modes (localStorage: humanize.spike.mode):
+ * Modes (localStorage: chatty.mode):
  *   off    - default: do not register anything; native renderer stays
  *   probe  - shadow `assistant-step` with a debug card
  *   shadow - shadow it with a naive multi-bubble view (visual proof for G1)
@@ -9,7 +9,7 @@
  * The probe is off by default so it cannot disturb normal coding sessions.
  * The real plugin will follow the host-side per-session scope in FR-12.
  *
- * Priority (localStorage: humanize.spike.priority, default 0) lets us find
+ * Priority (localStorage: chatty.priority, default 0) lets us find
  * out which direction the keyed-slot priority runs without rebuilding.
  *
  * This is throwaway code. Do not build product features on it.
@@ -17,10 +17,10 @@
 (function () {
   "use strict";
 
-  console.log("[spike-humanize] client script evaluated");
+  console.log("[dsh-chatty] client script evaluated");
 
-  var MODE_KEY = "humanize.spike.mode";
-  var PRIORITY_KEY = "humanize.spike.priority";
+  var MODE_KEY = "chatty.mode";
+  var PRIORITY_KEY = "chatty.priority";
 
   function readSetting(key, fallback) {
     try {
@@ -58,26 +58,26 @@
           if (loaded && loaded.MarkdownText) {
             primitives = loaded;
             console.log(
-              "[spike-humanize] primitives resolved (MarkdownText is " + typeof loaded.MarkdownText + ")",
+              "[dsh-chatty] primitives resolved (MarkdownText is " + typeof loaded.MarkdownText + ")",
             );
             return primitives;
           }
           if (!primitivesWarned) {
             primitivesWarned = true;
-            console.warn("[spike-humanize] primitives loaded but MarkdownText is missing");
+            console.warn("[dsh-chatty] primitives loaded but MarkdownText is missing");
           }
         } catch (error) {
           if (!primitivesWarned) {
             primitivesWarned = true;
             console.warn(
-              "[spike-humanize] primitives not reachable yet: " + String((error && error.message) || error),
+              "[dsh-chatty] primitives not reachable yet: " + String((error && error.message) || error),
             );
           }
         }
         return null;
       }
 
-      var name = "spike-humanize-client";
+      var name = "dsh-chatty-client";
       var inject = ["slots"];
 
       var mode = readSetting(MODE_KEY, "off");
@@ -114,7 +114,7 @@
             return slots.entries("conversation.chat.node");
           }
         } catch (error) {
-          console.warn("[spike-humanize] cannot list slot entries", error);
+          console.warn("[dsh-chatty] cannot list slot entries", error);
         }
         return [];
       }
@@ -125,7 +125,7 @@
         try {
           if (typeof slots.entries === "function") return slots.entries("conversation.chat.node");
         } catch (error) {
-          console.warn("[spike-humanize] cannot list raw slot entries", error);
+          console.warn("[dsh-chatty] cannot list raw slot entries", error);
         }
         return listEntries(slots);
       }
@@ -153,7 +153,7 @@
           var now = Date.now();
           if (now - lastLog.current < 300) return;
           lastLog.current = now;
-          console.log("[spike-humanize] render", {
+          console.log("[dsh-chatty] render", {
             turn: data.turn,
             step: data.step,
             status: data.status,
@@ -163,7 +163,7 @@
         });
 
         return jsx("div", {
-          "data-spike": "probe",
+          "data-chatty": "probe",
           style: {
             outline: "2px solid #ef4444",
             borderRadius: 8,
@@ -351,16 +351,16 @@
           ].forEach(function (key) {
             probe[key] = typeof (props || {})[key];
           });
-          console.log("[spike-humanize] view props keys: " + keys.join(", "));
-          console.log("[spike-humanize] view props probes " + safeJson(probe));
-          console.log("[spike-humanize] groupPart=" + String((props || {}).groupPart));
+          console.log("[dsh-chatty] view props keys: " + keys.join(", "));
+          console.log("[dsh-chatty] view props probes " + safeJson(probe));
+          console.log("[dsh-chatty] groupPart=" + String((props || {}).groupPart));
           // FR-12: if the node knows its session, per-session gating is
           // feasible on the client without the host fingerprint pipeline.
           var sid = (props || {}).sessionId;
-          console.log("[spike-humanize] sessionId is " + typeof sid + ": " + String(sid).slice(0, 64));
+          console.log("[dsh-chatty] sessionId is " + typeof sid + ": " + String(sid).slice(0, 64));
         } catch (error) {
           // Logging must never take the reply down with it.
-          console.warn("[spike-humanize] props log failed: " + String((error && error.message) || error));
+          console.warn("[dsh-chatty] props log failed: " + String((error && error.message) || error));
         }
       }
 
@@ -379,7 +379,7 @@
       function reasoningNode(block, key, streaming) {
         return jsx("details", {
           key: "r" + key,
-          "data-spike": "reasoning",
+          "data-chatty": "reasoning",
           style: {
             border: "0.5px solid var(--dsw-alias-border-l1, rgba(127,127,127,0.20))",
             borderRadius: 10,
@@ -406,17 +406,17 @@
       function imagesNode(blocks, key, props) {
         if (typeof props.renderSlot !== "function") {
           // Declaring the native child slot from a second entry risks a slot
-          // ownership error, so for the spike images are flagged, not drawn.
+          // ownership error, so images are flagged, not drawn.
           return jsx("div", {
             key: "i" + key,
-            "data-spike": "images-missing",
+            "data-chatty": "images-missing",
             style: { fontSize: 12, color: "var(--dsw-alias-label-tertiary, inherit)" },
             children: "（图片：" + blocks.length + " 张，需原生组件渲染）",
           });
         }
         return jsx("div", {
           key: "i" + key,
-          "data-spike": "images",
+          "data-chatty": "images",
           children: props.renderSlot("conversation.chat.message.images", {
             images: blocks.map(function (block) {
               return { attachment: block.attachment };
@@ -433,9 +433,9 @@
         } catch (error) {
           // A thrown render blanks the whole message (the slot shows an empty
           // `data-slot-error` face). Never lose the text: show it plainly.
-          console.error("[spike-humanize] bubble render failed", error);
+          console.error("[dsh-chatty] bubble render failed", error);
           return jsx("pre", {
-            "data-spike": "bubbles-error",
+            "data-chatty": "bubbles-error",
             style: { whiteSpace: "pre-wrap", fontFamily: "inherit", margin: 0 },
             children: textOf(props.node),
           });
@@ -447,9 +447,9 @@
       // typing, hit send, then send the next message. So while `status` is
       // "running" we show a typing indicator instead of the growing text, and
       // once the step settles we reveal whole bubbles one at a time.
-      var BUFFER_KEY = "humanize.spike.buffer";
-      var GAP_KEY = "humanize.spike.gap";
-      var MOTION_KEY = "humanize.spike.motion";
+      var BUFFER_KEY = "chatty.buffer";
+      var GAP_KEY = "chatty.gap";
+      var MOTION_KEY = "chatty.motion";
 
       var bufferStreaming = readSetting(BUFFER_KEY, "on") !== "off";
       var bubbleGap = Number(readSetting(GAP_KEY, "450"));
@@ -458,10 +458,10 @@
       // reduced motion ("off" does the opposite).
       var forceMotion = readSetting(MOTION_KEY, "auto");
 
-      // G3: the host owns `.spike.config.json` and publishes it over HTTP; the
+      // G3: the host owns `.config.json` and publishes it over HTTP; the
       // settings page writes it back. localStorage above stays as the offline
       // fallback so the cadence still works if the host is unreachable.
-      var REMOTE_BASE = "/dsh-humanize";
+      var REMOTE_BASE = "/dsh-chatty";
       var remote = { loaded: false, error: null, config: null };
       // Last session our view rendered in. Used by the settings page to mark
       // "current" — the client-side sessions service has no active-session
@@ -470,7 +470,7 @@
 
       var FIRST_BUBBLE_MS = 200;
       var PER_CHAR_MS = (function () {
-        var value = Number(readSetting("humanize.spike.perchar", "6"));
+        var value = Number(readSetting("chatty.perchar", "6"));
         return Number.isFinite(value) && value >= 0 ? value : 6;
       })();
       var MIN_GAP_MS = 400;
@@ -523,7 +523,7 @@
         var perChar = Number(reveal.perChar);
         if (Number.isFinite(perChar) && perChar >= 0) {
           PER_CHAR_MS = perChar;
-          window.localStorage.setItem("humanize.spike.perchar", String(perChar));
+          window.localStorage.setItem("chatty.perchar", String(perChar));
         }
         bufferStreaming = reveal.buffer !== false;
         window.localStorage.setItem(BUFFER_KEY, bufferStreaming ? "on" : "off");
@@ -539,7 +539,7 @@
       // `color: var(--dsw-alias-label-primary)`. Overriding that one custom
       // property recolours the user's bubbles app-wide with no slot shadowing,
       // which is why this is a CSS override and not another registered view.
-      var PALETTE_CSS_ID = "spike-humanize-palette-css";
+      var PALETTE_CSS_ID = "dsh-chatty-palette-css";
       var palette = { userBubble: "", userText: "", assistantBubble: "", assistantText: "" };
 
       /** "#rrggbb" -> "#111"/"#fff", whichever stays readable on it. */
@@ -613,7 +613,7 @@
         ensurePaletteCss();
       }
 
-      var TYPING_CSS_ID = "spike-humanize-typing-css";
+      var TYPING_CSS_ID = "dsh-chatty-typing-css";
 
       function ensureTypingCss() {
         try {
@@ -621,8 +621,8 @@
           var style = document.createElement("style");
           style.id = TYPING_CSS_ID;
           style.textContent =
-            "@keyframes spike-typing{0%,60%,100%{opacity:.25;transform:translateY(0)}30%{opacity:.9;transform:translateY(-2px)}}" +
-            "@media (prefers-reduced-motion:reduce){[data-spike='typing'] span{animation:none!important;opacity:.5!important}}" +
+            "@keyframes chatty-typing{0%,60%,100%{opacity:.25;transform:translateY(0)}30%{opacity:.9;transform:translateY(-2px)}}" +
+            "@media (prefers-reduced-motion:reduce){[data-chatty='typing'] span{animation:none!important;opacity:.5!important}}" +
             // `dsh-meme` moves the image it built to the first child of the
             // message row. Only then does the marker bubble become invisible —
             // if the plugin is missing or could not match the caption, the text
@@ -657,14 +657,14 @@
               background: "var(--dsw-alias-label-tertiary, currentColor)",
               opacity: 0.25,
               display: "inline-block",
-              animation: "spike-typing 1.2s infinite ease-in-out",
+              animation: "chatty-typing 1.2s infinite ease-in-out",
               animationDelay: index * 0.16 + "s",
             },
           });
         });
         return jsx("div", {
           key: "typing",
-          "data-spike": "typing",
+          "data-chatty": "typing",
           style: {
             display: "flex",
             alignItems: "center",
@@ -733,7 +733,7 @@
               var markerOnly = isMemeMarkerOnly(parts[p]);
               var bubbleProps = {
                 key: "t" + key++,
-                "data-spike": "bubble",
+                "data-chatty": "bubble",
                 style: BUBBLE_STYLE,
                 children: markdownOr(parts[p], false),
               };
@@ -774,7 +774,7 @@
               weight: 0,
               node: jsx("div", {
                 key: "u" + key++,
-                "data-spike": "unknown",
+                "data-chatty": "unknown",
                 style: { fontSize: 12, color: "var(--dsw-alias-label-tertiary, inherit)" },
                 children: "（未支持的 block：" + block.kind + "）",
               }),
@@ -823,7 +823,7 @@
           try {
             snapshot[i]();
           } catch (error) {
-            console.warn("[spike-humanize] reveal listener failed: " + errText(error));
+            console.warn("[dsh-chatty] reveal listener failed: " + errText(error));
           }
         }
       }
@@ -959,7 +959,7 @@
               if (!entry.motionLogged) {
                 entry.motionLogged = true;
                 console.log(
-                  "[spike-humanize] reveal skipped for " + nodeId + ": prefers-reduced-motion",
+                  "[dsh-chatty] reveal skipped for " + nodeId + ": prefers-reduced-motion",
                 );
               }
               entry.done = true;
@@ -972,7 +972,7 @@
             if (!entry.logged) {
               entry.logged = true;
               console.log(
-                "[spike-humanize] reveal start " +
+                "[dsh-chatty] reveal start " +
                   nodeId +
                   " bubbles=" +
                   total +
@@ -1008,7 +1008,7 @@
         if (!children.length) return null;
 
         return jsx("div", {
-          "data-spike": "bubbles",
+          "data-chatty": "bubbles",
           style: { display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 8, padding: "2px 0" },
           children: children,
         });
@@ -1033,7 +1033,7 @@
           }
         }
         if (!children.length) return null;
-        return jsx("div", { "data-spike": "pass", children: children });
+        return jsx("div", { "data-chatty": "pass", children: children });
       }
 
       function makeView(slots, kind) {
@@ -1042,7 +1042,7 @@
           if (kind === "pass") return PassView(props);
           return BubbleView(props);
         }
-        View.__spike = true;
+        View.__chatty = true;
         return View;
       }
 
@@ -1158,17 +1158,17 @@
       }
 
       function apply(ctx) {
-        console.log("[spike-humanize] client loaded", { mode: mode, priority: priority });
+        console.log("[dsh-chatty] client loaded", { mode: mode, priority: priority });
 
         var slots = typeof ctx.get === "function" ? ctx.get("slots") : ctx.slots;
         if (!slots) {
-          console.warn("[spike-humanize] slots service not available; probe disabled");
+          console.warn("[dsh-chatty] slots service not available; probe disabled");
           return;
         }
 
         var initialEntries = summarize(listEntries(slots));
         if (initialEntries.length) console.table(initialEntries);
-        else console.warn("[spike-humanize] no slot entries visible yet");
+        else console.warn("[dsh-chatty] no slot entries visible yet");
 
         var used = { priority: null };
         var disposers = [];
@@ -1182,7 +1182,7 @@
             try {
               if (typeof dispose === "function") dispose();
             } catch (error) {
-              console.warn("[spike-humanize] dispose failed: " + String(error && error.message));
+              console.warn("[dsh-chatty] dispose failed: " + String(error && error.message));
             }
           });
           disposers = [];
@@ -1200,7 +1200,7 @@
 
         function switchMode(next) {
           if (next !== "off" && next !== "probe" && next !== "bubbles" && next !== "pass") {
-            console.warn("[spike-humanize] unknown mode " + JSON.stringify(next));
+            console.warn("[dsh-chatty] unknown mode " + JSON.stringify(next));
             return mode;
           }
           unmount();
@@ -1208,12 +1208,12 @@
           window.localStorage.setItem(MODE_KEY, next);
           mount();
           console.log(
-            "[spike-humanize] mode -> " + next + (used.priority === null ? "" : " (live, priority " + used.priority + ")"),
+            "[dsh-chatty] mode -> " + next + (used.priority === null ? "" : " (live, priority " + used.priority + ")"),
           );
           return mode;
         }
 
-        window.__humanizeSpike = {
+        window.__chatty = {
           get mode() {
             return mode;
           },
@@ -1222,7 +1222,7 @@
           },
           sessions: function () {
             var result = probeSessions(ctx);
-            console.log("[spike-humanize] sessions probe " + safeJson(result));
+            console.log("[dsh-chatty] sessions probe " + safeJson(result));
             return result;
           },
           dump: function () {
@@ -1255,7 +1255,7 @@
             } catch (error) {
               out.all = "ERROR: " + String((error && error.message) || error);
             }
-            console.log("[spike-humanize] slots " + safeJson(out));
+            console.log("[dsh-chatty] slots " + safeJson(out));
             return out;
           },
           setMode: switchMode,
@@ -1263,14 +1263,14 @@
             priority = Number(next);
             window.localStorage.setItem(PRIORITY_KEY, String(next));
             if (mode !== "off") switchMode(mode);
-            console.log("[spike-humanize] priority -> " + priority);
+            console.log("[dsh-chatty] priority -> " + priority);
           },
           reset: function () {
             window.localStorage.removeItem(MODE_KEY);
             window.localStorage.removeItem(PRIORITY_KEY);
             switchMode("off");
             priority = -100;
-            console.log("[spike-humanize] settings cleared; mode=off");
+            console.log("[dsh-chatty] settings cleared; mode=off");
           },
           textStats: function () {
             return summarize(listEntries(slots));
@@ -1279,7 +1279,7 @@
           buffer: function (next) {
             bufferStreaming = next !== "off" && next !== false;
             window.localStorage.setItem(BUFFER_KEY, bufferStreaming ? "on" : "off");
-            console.log("[spike-humanize] bufferStreaming -> " + bufferStreaming);
+            console.log("[dsh-chatty] bufferStreaming -> " + bufferStreaming);
             return bufferStreaming;
           },
           // FR-1: base pause before each follow-up bubble, in milliseconds.
@@ -1289,7 +1289,7 @@
               bubbleGap = next;
               window.localStorage.setItem(GAP_KEY, String(next));
             }
-            console.log("[spike-humanize] bubbleGap -> " + bubbleGap);
+            console.log("[dsh-chatty] bubbleGap -> " + bubbleGap);
             return bubbleGap;
           },
           // FR-1: extra delay per character of the bubble about to appear.
@@ -1297,9 +1297,9 @@
             var next = Number(ms);
             if (Number.isFinite(next) && next >= 0) {
               PER_CHAR_MS = next;
-              window.localStorage.setItem("humanize.spike.perchar", String(next));
+              window.localStorage.setItem("chatty.perchar", String(next));
             }
-            console.log("[spike-humanize] PER_CHAR_MS -> " + PER_CHAR_MS);
+            console.log("[dsh-chatty] PER_CHAR_MS -> " + PER_CHAR_MS);
             return PER_CHAR_MS;
           },
           // FR-1: force the reveal on/off regardless of the OS motion setting.
@@ -1307,7 +1307,7 @@
             var value = next === "on" || next === "off" ? next : "auto";
             forceMotion = value;
             window.localStorage.setItem(MOTION_KEY, value);
-            console.log("[spike-humanize] motion -> " + value);
+            console.log("[dsh-chatty] motion -> " + value);
             return value;
           },
           // FR-1: one-call diagnostic for "why did everything appear at once".
@@ -1341,7 +1341,7 @@
           resetReveal: function () {
             Object.keys(revealTimers).forEach(stopReveal);
             reveals = {};
-            console.log("[spike-humanize] reveal memory cleared");
+            console.log("[dsh-chatty] reveal memory cleared");
           },
           // FR-1: pure decision helper, exposed so smoke can lock it down.
           planReveal: nextRevealAction,
@@ -1351,7 +1351,7 @@
             Object.keys(reveals).forEach(function (id) {
               out[id] = reveals[id];
             });
-            console.log("[spike-humanize] reveals " + safeJson(out));
+            console.log("[dsh-chatty] reveals " + safeJson(out));
             return out;
           },
           // G7: register the bubbles view into ONE session's slot scope.
@@ -1378,7 +1378,7 @@
               remote.loaded = true;
               remote.error = null;
               var result = applyRemoteConfig(body.config, { quiet: false });
-              console.log("[spike-humanize] host config " + safeJson(body.config));
+              console.log("[dsh-chatty] host config " + safeJson(body.config));
               return { body: body, result: result };
             });
           },
@@ -1400,13 +1400,13 @@
                 out[id] = "ERROR: " + String((error && error.message) || error);
               }
             });
-            console.log("[spike-humanize] modules " + safeJson(out));
+            console.log("[dsh-chatty] modules " + safeJson(out));
             return out;
           },
         };
 
         if (mode === "off") {
-          console.log("[spike-humanize] mode=off; native renderer kept");
+          console.log("[dsh-chatty] mode=off; native renderer kept");
         } else {
           mount();
         }
@@ -1420,7 +1420,7 @@
             return slots.register(
               {
                 name: "settings.section",
-                id: "humanize",
+                id: "chatty",
                 order: 60,
                 label: function () {
                   return "拟人化输出";
@@ -1430,7 +1430,7 @@
             );
           });
         } catch (error) {
-          console.warn("[spike-humanize] settings page not registered: " + errText(error));
+          console.warn("[dsh-chatty] settings page not registered: " + errText(error));
         }
 
         // G3: read the host config and turn the plugin on by itself. Without
@@ -1470,10 +1470,10 @@
           setTimeout(function () {
             var result = probeSessions(ctx);
             if (!result.available) {
-              console.log("[spike-humanize] sessions probe @" + delay + "ms: service not available yet");
+              console.log("[dsh-chatty] sessions probe @" + delay + "ms: service not available yet");
               return;
             }
-            console.log("[spike-humanize] sessions probe @" + delay + "ms " + safeJson(result));
+            console.log("[dsh-chatty] sessions probe @" + delay + "ms " + safeJson(result));
           }, delay);
         });
       }
@@ -1499,7 +1499,7 @@
             break;
           }
           console.warn(
-            "[spike-humanize] priority " +
+            "[dsh-chatty] priority " +
               attempts[i] +
               " rejected: " +
               String((result.error && result.error.message) || result.error),
@@ -1508,19 +1508,19 @@
         }
 
         if (used.priority === null) {
-          console.error("[spike-humanize] no free priority found; probe inactive");
+          console.error("[dsh-chatty] no free priority found; probe inactive");
           return null;
         }
 
         console.log(
-          "[spike-humanize] registered " + ViewName(target) + " at priority " + used.priority,
+          "[dsh-chatty] registered " + ViewName(target) + " at priority " + used.priority,
         );
 
         // Slot contents are only complete once the chat UI has mounted.
         if (typeof setTimeout === "function") {
           setTimeout(function () {
             var rows = summarize(listEntries(slots));
-            console.log("[spike-humanize] slot entries after mount:");
+            console.log("[dsh-chatty] slot entries after mount:");
             console.table(rows);
           }, 2000);
         }
@@ -1562,7 +1562,7 @@
       }
 
       function logOut(out) {
-        console.log("[spike-humanize] " + safeJson(out));
+        console.log("[dsh-chatty] " + safeJson(out));
         return out;
       }
 
@@ -1659,7 +1659,7 @@
         try {
           if (typeof entry.dispose === "function") entry.dispose();
         } catch (error) {
-          console.warn("[spike-humanize] scoped dispose failed: " + errText(error));
+          console.warn("[dsh-chatty] scoped dispose failed: " + errText(error));
         }
         return true;
       }
@@ -1696,7 +1696,7 @@
           scoped.attaches += 1;
           return true;
         } catch (error) {
-          console.warn("[spike-humanize] scoped register failed: " + errText(error));
+          console.warn("[dsh-chatty] scoped register failed: " + errText(error));
           return false;
         }
       }
@@ -1727,7 +1727,7 @@
         var id = sessionId || out.knownIds[out.knownIds.length - 1];
         out.target = id || null;
         if (!id) {
-          out.hint = "pass a session id: __humanizeSpike.scopedTest('session-...')";
+          out.hint = "pass a session id: __chatty.scopedTest('session-...')";
           return logOut(out);
         }
 
@@ -1791,7 +1791,7 @@
         if (!rootCtx) return logOut({ error: "plugin context not ready yet" });
         if (!sessionId && !scoped.ids.length) {
           return logOut({
-            hint: "pass a session id: __humanizeSpike.scopedWatch('session-...')",
+            hint: "pass a session id: __chatty.scopedWatch('session-...')",
           });
         }
         return scopedWatchMany(sessionId ? [sessionId] : scoped.ids);
@@ -1814,9 +1814,9 @@
       }
 
       // --- G3: host-owned config, read and written over HTTP -----------------
-      // The browser cannot read files. The host publishes `.spike.config.json`
-      // on `/dsh-humanize/state` and accepts the two blocks the settings page
-      // owns on `/dsh-humanize/save`. Same shape as dsh-speak-up, which already
+      // The browser cannot read files. The host publishes `.config.json`
+      // on `/dsh-chatty/state` and accepts the two blocks the settings page
+      // owns on `/dsh-chatty/save`. Same shape as dsh-speak-up, which already
       // runs on this machine.
       function fetchState() {
         return fetch(REMOTE_BASE + "/state", { cache: "no-store" }).then(function (response) {
@@ -1857,7 +1857,7 @@
           // Kept as a manual console escape hatch: register on the root slot
           // service, which touches every session in the window.
           console.warn(
-            "[spike-humanize] scope.mode=all is manual only; run __humanizeSpike.setMode('bubbles')",
+            "[dsh-chatty] scope.mode=all is manual only; run __chatty.setMode('bubbles')",
           );
           return { watching: "all" };
         }
@@ -1889,7 +1889,7 @@
        */
       function startRemoteConfig() {
         if (typeof fetch !== "function") {
-          console.warn("[spike-humanize] fetch unavailable; using local settings only");
+          console.warn("[dsh-chatty] fetch unavailable; using local settings only");
           return;
         }
 
@@ -1905,7 +1905,7 @@
               remote.error = null;
               var result = applyRemoteConfig(body.config, { quiet: true });
               console.log(
-                "[spike-humanize] host config applied " +
+                "[dsh-chatty] host config applied " +
                   safeJson({
                     scope: (body.config || {}).scope,
                     reveal: (body.config || {}).reveal,
@@ -1921,7 +1921,7 @@
                 return;
               }
               console.warn(
-                "[spike-humanize] host config unavailable (" +
+                "[dsh-chatty] host config unavailable (" +
                   remote.error +
                   "); using local settings only",
               );
@@ -1932,7 +1932,7 @@
       }
 
       // --- G3: settings page -------------------------------------------------
-      var SETTINGS_CSS_ID = "spike-humanize-settings-css";
+      var SETTINGS_CSS_ID = "dsh-chatty-settings-css";
 
       function ensureSettingsCss() {
         try {
@@ -2410,5 +2410,5 @@
     };
   }
 
-  window.__ModuleLoader__.load({ id: "spike-humanize", factory: makeFactory() });
+  window.__ModuleLoader__.load({ id: "dsh-chatty", factory: makeFactory() });
 })();

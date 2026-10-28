@@ -15,9 +15,9 @@
 
 | 证据 | 内容 |
 | :--- | :--- |
-| `spike-humanize/spike.config.json` | `mode: "allowlist"`，白名单**包含** `session-351816c0-…` |
+| `dsh-chatty/config.json` | `mode: "allowlist"`，白名单**包含** `session-351816c0-…` |
 | 该文件 mtime | `2026-10-27T13:14:27Z` —— 之后再没有任何一次写入 |
-| `.spike-output/sessions.jsonl` | 该会话最近一次记录 `enabled: true` |
+| `~/.dsh/chatty/logs/sessions.jsonl` | 该会话最近一次记录 `enabled: true` |
 | 会话日志（`~/.dsh/sessions/…/session.v4.jsonl.zstd`，解压后 443 行） | `system/message` 共 4 条，出现在 turn 1 / 2 / 11 / 17；turn 2 / 11 / 17 的提示词里**确实含有**「【回复分段规范】」 |
 
 也就是说：
@@ -57,7 +57,7 @@
 | 列表前加「全选」（三态：全选 / 半选 / 全不选） | 用户提的交互；全不选就是彻底关闭 |
 | 列表下方加实时汇总「当前：N / M 个会话生效」 | 一眼看出关没关，不用去翻配置文件 |
 | 勾选里残留的、不在当前列表的 id 单独提示 | 否则会出现「看不见但生效」的会话 |
-| **新增 `.spike-output/section-decisions.jsonl`** | 每次组装提示词记一行：`ts / sessionId / mode / enabled / chars`。以后再怀疑「到底注入没有」，看文件，不要问模型 |
+| **新增 `~/.dsh/chatty/logs/section-decisions.jsonl`** | 每次组装提示词记一行：`ts / sessionId / mode / enabled / chars`。以后再怀疑「到底注入没有」，看文件，不要问模型 |
 
 `section-decisions.jsonl` 的读法：
 
@@ -89,7 +89,7 @@ DSH 自己的行为：agent 正在跑的时候，用户再发的消息进收件�
 2. 设置 → 拟人化输出：确认**没有**顶部开关、**没有**保存按钮，列表前有「全选」
 3. 取消当前会话的勾选（页面立刻显示「已保存，立即生效」，汇总变成「当前：一个会话都没勾」）
 4. 在同一会话里发消息 → 回复应当**保持 DSH 原样**（不再分段）
-5. 检查 `spike-humanize/.spike-output/section-decisions.jsonl` 最后几行：
+5. 检查 `~/.dsh/chatty/logs/section-decisions.jsonl` 最后几行：
    该会话应为 `"enabled":false,"chars":0`
 
 > 第 4 步的预期要放宽一点：如果这个会话之前已经连着回了十几条短段，

@@ -14,11 +14,13 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const FILE = join(ROOT, "spike-humanize/.spike-output/assistant.jsonl");
+const STATE_DIR = process.env.CHATTY_STATE_DIR ?? join(homedir(), ".dsh", "chatty");
+const FILE = join(STATE_DIR, "logs", "assistant.jsonl");
 
 /** Same fence state machine as the client splitter, so counts match rendering. */
 function splitParagraphs(text) {

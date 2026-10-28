@@ -1,18 +1,18 @@
 #!/usr/bin/env node
 /**
- * Remove the Phase 0 probe plugin from the DSH desktop profile.
+ * Remove dsh-chatty from the DSH desktop profile.
  */
 
 import { existsSync, lstatSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-const PLUGIN_NAME = "spike-humanize";
+const PLUGIN_NAME = "dsh-chatty";
 const PROFILE_DIR = process.env.DSH_PROFILE_DIR ?? join(homedir(), ".dsh", "profiles", "desktop");
 const PROFILE_PKG = join(PROFILE_DIR, "package.json");
 
 if (!existsSync(PROFILE_PKG)) {
-  console.error("[uninstall-spike] profile package.json not found at " + PROFILE_PKG);
+  console.error("[uninstall] profile package.json not found at " + PROFILE_PKG);
   process.exit(1);
 }
 
@@ -34,5 +34,5 @@ try {
   // already gone
 }
 
-console.log("[uninstall-spike] removed " + PLUGIN_NAME + " from " + PROFILE_DIR);
-console.log("[uninstall-spike] restart DSH Desktop to finish.");
+console.log("[uninstall] removed " + PLUGIN_NAME + " from " + PROFILE_DIR);
+console.log("[uninstall] restart DSH Desktop to finish.");

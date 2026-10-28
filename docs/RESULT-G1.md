@@ -12,7 +12,7 @@
 
 ```
 Uncaught Error: keyed slot "conversation.chat.node" already has an entry for key
-"assistant-step" at priority 0 (registered by spike-humanize-client)
+"assistant-step" at priority 0 (registered by dsh-chatty-client)
 — register at a different priority to shadow it (lowest renders)
 ```
 

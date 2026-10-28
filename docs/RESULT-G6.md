@@ -17,7 +17,7 @@
 
 ## 6a 客户端 `sessions` 服务形状
 
-实机输出（`window.__humanizeSpike.sessions()`，DSH 0.2.1-rc.3）：
+实机输出（`window.__chatty.sessions()`，DSH 0.2.1-rc.3）：
 
 ```json
 {

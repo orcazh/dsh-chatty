@@ -3,10 +3,10 @@
  * Pre-flight check for the Phase 0 probe.
  *
  * Answers "will DSH even see this plugin on next boot?" without launching DSH:
- *  1. profile package.json lists spike-humanize in dependencies + dsh.profile.bundles
+ *  1. profile package.json lists dsh-chatty in dependencies + dsh.profile.bundles
  *  2. the package resolves from the profile (junction works)
  *  3. the bundle patch resolves and is reachable via ./cordis.patch.yml
- *  4. the patch actually inserts an entry named spike-humanize
+ *  4. the patch actually inserts an entry named dsh-chatty
  *  5. the host module imports cleanly and exports apply/inject/name
  *  6. the client module is reachable via ./client
  *
@@ -19,7 +19,7 @@ import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { pathToFileURL } from "node:url";
 
-const PLUGIN = "spike-humanize";
+const PLUGIN = "dsh-chatty";
 const PROFILE_DIR = process.env.DSH_PROFILE_DIR ?? join(homedir(), ".dsh", "profiles", "desktop");
 const PROFILE_PKG = join(PROFILE_DIR, "package.json");
 
@@ -67,9 +67,9 @@ if (pkgJsonPath) {
 
     if (existsSync(patchPath)) {
       const yaml = readFileSync(patchPath, "utf8");
-      const nameLine = /name:\s*['"]?spike-humanize['"]?\s*$/m.test(yaml);
-      const idLine = /id:\s*['"]?spike-humanize['"]?\s*$/m.test(yaml);
-      check("patch inserts spike-humanize", nameLine && idLine, "id+name entry");
+      const nameLine = /name:\s*['"]?dsh-chatty['"]?\s*$/m.test(yaml);
+      const idLine = /id:\s*['"]?dsh-chatty['"]?\s*$/m.test(yaml);
+      check("patch inserts dsh-chatty", nameLine && idLine, "id+name entry");
       try {
         req.resolve(PLUGIN + "/cordis.patch.yml");
         check("patch exported as ./cordis.patch.yml", true);
@@ -116,5 +116,5 @@ if (problems.length) {
 }
 
 console.log("\n[verify] all structural checks passed.");
-console.log("Next: restart DSH Desktop, then look for '[spike-humanize] client script evaluated'.");
-console.log("Host liveness (no console needed): spike-humanize/.spike-output/host-boot.jsonl");
+console.log("Next: restart DSH Desktop, then look for '[dsh-chatty] client script evaluated'.");
+console.log("Host liveness (no console needed): ~/.dsh/chatty/logs/host-boot.jsonl");

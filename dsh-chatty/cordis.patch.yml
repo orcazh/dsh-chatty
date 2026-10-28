@@ -1,0 +1,5 @@
+# dsh-chatty bundle patch.
+# Mounts the host half; the package's `dsh.client` entry loads the browser half.
+- insert:
+    - id: dsh-chatty
+      name: 'dsh-chatty'

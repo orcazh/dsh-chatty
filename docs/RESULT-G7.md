@@ -72,7 +72,7 @@ slot 服务，**且它与根 slot 服务不是同一个对象**（实测 `sameSl
 > 全被这个上限吃掉了。现在上限抬到 6000ms，滑杆范围也放宽到
 > 固定停顿 0–3000ms、每多一个字 0–60ms。
 
-两项都可用 `__humanizeSpike.gap()` / `.perChar()` 即时调整，无需重启。
+两项都可用 `__chatty.gap()` / `.perChar()` 即时调整，无需重启。
 将来这是设置界面的两个滑杆。
 
 ### 三个坑（都踩过，都修了）
@@ -103,16 +103,16 @@ slot 服务，**且它与根 slot 服务不是同一个对象**（实测 `sameSl
 **已可用的完整链路**（手动触发）：
 
 ```js
-__humanizeSpike.setMode("off")                                  // 关掉全局
-__humanizeSpike.scopedWatch("session-....")                     // 只在这个会话生效
+__chatty.setMode("off")                                  // 关掉全局
+__chatty.scopedWatch("session-....")                     // 只在这个会话生效
 ```
 
 **动画排查工具**：
 
 ```js
-__humanizeSpike.diag()        // 配置 + 减少动画开关 + 所有节点的进度
-__humanizeSpike.reveals()     // 只看进度表
-__humanizeSpike.resetReveal() // 清空记忆，让旧消息也能重播
+__chatty.diag()        // 配置 + 减少动画开关 + 所有节点的进度
+__chatty.reveals()     // 只看进度表
+__chatty.resetReveal() // 清空记忆，让旧消息也能重播
 ```
 
 **待办**：目前仍要手动在 Console 里跑 `scopedWatch`。

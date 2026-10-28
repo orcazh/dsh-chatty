@@ -2,7 +2,7 @@
 /**
  * Session scope helper for the Phase 0 probe (preview of FR-12).
  *
- * The probe writes every session it sees to .spike-output/sessions.jsonl, so
+ * The probe writes every session it sees to logs/sessions.jsonl, so
  * you can pick an id without guessing.
  *
  *   node scripts/scope.mjs                  # show current scope + seen sessions
@@ -14,13 +14,15 @@
  */
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const PKG_DIR = join(ROOT, "spike-humanize");
-const CONFIG_FILE = join(PKG_DIR, "spike.config.json");
-const SEEN_FILE = join(PKG_DIR, ".spike-output", "sessions.jsonl");
+const STATE_DIR = process.env.CHATTY_STATE_DIR ?? join(homedir(), ".dsh", "chatty");
+const CONFIG_FILE = join(STATE_DIR, "config.json");
+const LOG_DIR = join(STATE_DIR, "logs");
+const SEEN_FILE = join(LOG_DIR, "sessions.jsonl");
 
 const DEFAULTS = {
   promptSection: true,

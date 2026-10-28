@@ -13,10 +13,10 @@
 
 不人工数段落，改为**宿主捕获 + 脚本计分**：
 
-1. `spike.config.json` 的 `scope.mode = "allowlist"`，只放行一个会话；
+1. `config.json` 的 `scope.mode = "allowlist"`，只放行一个会话；
 2. 宿主在 `systemPrompt.section` 注入 L2 分段规范（`order: 900`）；
 3. 宿主监听 `session/event` 的 `assistant/message`，把最终正文写进
-   `spike-humanize/.spike-output/assistant.jsonl`；
+   `~/.dsh/chatty/logs/assistant.jsonl`；
 4. `npm run g2` 读取该文件，用**与客户端渲染同一个围栏状态机**重新数段，
    输出合规率、围栏内空行、未闭合围栏、规范泄漏四项指标。
 
@@ -112,7 +112,7 @@
 - **第一轮（2–6 段规范）技术指标全部达标**：88% 落在区间，零元话语，零破围栏。
 - 但**观感判定为「还不够碎」**（用户 2026-10-27 反馈）：希望更像连发消息。
 - 因此进入**第二轮**：把规范改成「1–2 句一段、单段 ≤60 字、通常 3–6 段、首段要短」，
-  并把规范文本搬到 `spike.config.json` 的 `sectionText`，**改提示词不再需要重启 DSH**。
+  并把规范文本搬到 `config.json` 的 `sectionText`，**改提示词不再需要重启 DSH**。
 - 第二轮判定标准改为：**3–6 段 ≥ 80%**，元话语 0，破围栏 0，代码块/表格/列表不拆散。
 - 第一轮原始数据已归档为 `assistant.round1.jsonl`，第二轮为 `assistant.round2.jsonl`。
 

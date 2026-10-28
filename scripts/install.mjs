@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Install the Phase 0 probe plugin into the DSH desktop profile.
+ * Install dsh-chatty into the DSH desktop profile (dev workflow, `link:`).
  *
  * - backs up package.json first
  * - adds a `link:` dependency
@@ -25,13 +25,13 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const PLUGIN_NAME = "spike-humanize";
+const PLUGIN_NAME = "dsh-chatty";
 const PLUGIN_DIR = join(ROOT, PLUGIN_NAME);
 const PROFILE_DIR = process.env.DSH_PROFILE_DIR ?? join(homedir(), ".dsh", "profiles", "desktop");
 const PROFILE_PKG = join(PROFILE_DIR, "package.json");
 
 function fail(message) {
-  console.error("\n[install-spike] " + message + "\n");
+  console.error("\n[install] " + message + "\n");
   process.exit(1);
 }
 
@@ -75,7 +75,7 @@ if (linkExists(linkPath)) {
 }
 symlinkSync(PLUGIN_DIR, linkPath, "junction");
 
-console.log("\n[install-spike] done");
+console.log("\n[install] done");
 console.log("  profile : " + PROFILE_DIR);
 console.log("  backup  : " + backup);
 console.log("  dep     : " + PLUGIN_NAME + " -> " + (previous ?? "(new)"));
@@ -83,9 +83,9 @@ console.log("  link    : " + linkPath);
 console.log("  bundle  : " + (hadBundle ? "already present" : "added"));
 console.log("\nNext:");
 console.log("  1. Restart DSH Desktop (the app was not running when this was written).");
-console.log("  2. Open DevTools and look for '[spike-humanize] client loaded'.");
-console.log("  3. Switch modes with: window.__humanizeSpike.setMode('shadow')  then reload.");
-console.log("  4. Undo with: npm run uninstall:spike\n");
+console.log("  2. Open DevTools and look for '[dsh-chatty] client loaded'.");
+console.log("  3. Switch modes with: window.__chatty.setMode('shadow')  then reload.");
+console.log("  4. Undo with: npm run uninstall:plugin\n");
 
 function linkExists(path) {
   try {

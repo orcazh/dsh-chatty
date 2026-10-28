@@ -1,5 +1,0 @@
-# Phase 0 probe bundle patch.
-# Mounts the host half; the package's dsh.client entry loads the browser half.
-- insert:
-    - id: spike-humanize
-      name: 'spike-humanize'

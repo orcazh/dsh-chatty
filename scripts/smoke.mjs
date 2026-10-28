@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Offline smoke test for the Phase 0 probe.
+ * Offline smoke test for dsh-chatty.
  *
  * Verifies the module contracts without launching DSH:
  *  - host: registers the L2 section, captures assistant messages to JSONL
@@ -11,11 +11,25 @@
  */
 
 import assert from "node:assert/strict";
-import { readFileSync, statSync, truncateSync, utimesSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+// The host keeps its config and logs in the user's home. Point it at a
+// throwaway directory BEFORE importing it, so a smoke run can never clobber the
+// real settings or leave fake samples in the real logs.
+const STATE_DIR = mkdtempSync(join(tmpdir(), "dsh-chatty-smoke-"));
+process.env.CHATTY_STATE_DIR = STATE_DIR;
+const LOG_DIR = join(STATE_DIR, "logs");
 const STORE = new Map();
 
 globalThis.window = {
@@ -119,19 +133,19 @@ function makeSlots() {
 }
 
 async function testClient(mode) {
-  STORE.set("humanize.spike.mode", mode);
+  STORE.set("chatty.mode", mode);
   delete globalThis.__loaded;
   // The G3 bootstrap fetches the host config at load. Hold it pending so these
   // renderer tests do not depend on the network (and so no retry ladder runs).
   globalThis.fetch = () => new Promise(() => {});
 
-  await import(pathToFileURL(join(ROOT, "spike-humanize/lib/client.js")).href + "?mode=" + mode);
+  await import(pathToFileURL(join(ROOT, "dsh-chatty/lib/client.js")).href + "?mode=" + mode);
 
   assert.ok(globalThis.__loaded, "client did not call __ModuleLoader__.load");
-  assert.equal(globalThis.__loaded.id, "spike-humanize");
+  assert.equal(globalThis.__loaded.id, "dsh-chatty");
 
   const module = globalThis.__loaded.factory(fakeRequire);
-  assert.equal(module.name, "spike-humanize-client");
+  assert.equal(module.name, "dsh-chatty-client");
   assert.deepEqual(module.inject, ["slots"]);
 
   const slots = makeSlots();
@@ -200,7 +214,7 @@ async function testClient(mode) {
 
   const settingsEntries = slots.entries.filter((e) => e.options.name === "settings.section");
   assert.equal(settingsEntries.length, 1, "expected one settings page");
-  assert.equal(settingsEntries[0].options.id, "humanize");
+  assert.equal(settingsEntries[0].options.id, "chatty");
   assert.equal(settingsEntries[0].options.label(), "拟人化输出");
   // G3: the page must render before the host answers (data is null on frame 1).
   const blank = settingsEntries[0].component({ close() {} });
@@ -223,7 +237,7 @@ async function testClient(mode) {
         { id: "session-abc123", shortId: "abc123", title: "测试会话" },
         { id: "session-def456", shortId: "def456", title: null },
       ],
-      configFile: "C:/x/spike.config.json",
+      configFile: "C:/x/config.json",
     },
     // draft, mirroring what `adopt()` would derive from the payload above
     {
@@ -283,7 +297,7 @@ async function testClient(mode) {
       // Deliberately a junk host list: the page must ignore it while the live
       // catalog has entries (this is the "20 untitled sessions" regression).
       sessions: [{ id: "session-gone", shortId: "e-gone", title: null }],
-      configFile: "C:/x/spike.config.json",
+      configFile: "C:/x/config.json",
     },
     { sessions: ["session-live1"], gap: 450, perChar: 6, buffer: true, motion: "auto" },
     null,
@@ -335,17 +349,17 @@ async function testClient(mode) {
   assert.ok(vnode, "view returned nothing");
 
   if (mode === "probe") {
-    assert.equal(vnode.props["data-spike"], "probe", "probe mode must render the debug card");
+    assert.equal(vnode.props["data-chatty"], "probe", "probe mode must render the debug card");
     assert.ok(JSON.stringify(vnode).includes("第一段"), "probe card must show the text");
   } else if (mode === "pass") {
-    assert.equal(vnode.props["data-spike"], "pass", "pass mode must render without bubbles");
+    assert.equal(vnode.props["data-chatty"], "pass", "pass mode must render without bubbles");
     assert.ok(JSON.stringify(vnode).includes("第一段"), "pass view did not render the text");
   } else {
-    assert.equal(vnode.props["data-spike"], "bubbles", "pure text must render as bubbles");
+    assert.equal(vnode.props["data-chatty"], "bubbles", "pure text must render as bubbles");
     assert.equal(vnode.props.children.length, 2, "expected two bubbles");
 
     const firstBubble = vnode.props.children[0];
-    assert.equal(firstBubble.props["data-spike"], "bubble");
+    assert.equal(firstBubble.props["data-chatty"], "bubble");
     assert.equal(firstBubble.props.children.props.text, "第一段。");
     assert.equal(firstBubble.props.children.type, MarkdownText, "bubbles must use MarkdownText");
     // Without labels the code-fence renderer throws and the reply vanishes.
@@ -364,7 +378,7 @@ async function testClient(mode) {
     });
     const streamingKids = streaming.props.children;
     assert.equal(streamingKids.length, 1, "streaming must render exactly one placeholder");
-    assert.equal(streamingKids[0].props["data-spike"], "typing", "streaming must show the typing dots");
+    assert.equal(streamingKids[0].props["data-chatty"], "typing", "streaming must show the typing dots");
     assert.ok(
       JSON.stringify(streaming).indexOf("第一段") === -1,
       "streaming must not leak the partial answer into the DOM",
@@ -406,7 +420,7 @@ async function testClient(mode) {
     // DSH queues the user's second message and opens turn 2 as soon as turn 1
     // ends, so the old reveal must be retired or the two replies talk over
     // each other.
-    const api = globalThis.window.__humanizeSpike;
+    const api = globalThis.window.__chatty;
     entry.component({
       node: { data: { turn: 5, step: 1, status: "final", blocks: [{ kind: "text", text: "旧的回复。" }] } },
     });
@@ -464,7 +478,7 @@ async function testClient(mode) {
       groupPart: "response",
     });
     assert.equal(responseHalf.props.children.length, 1, "response half must drop the reasoning");
-    assert.equal(responseHalf.props.children[0].props["data-spike"], "bubble");
+    assert.equal(responseHalf.props.children[0].props["data-chatty"], "bubble");
 
     // FR-1: a reply that was watched streaming must NOT dump every bubble on
     // the settle render — it starts hidden and steps forward.
@@ -474,7 +488,7 @@ async function testClient(mode) {
       node: { data: { status: "final", turn: 91, step: 1, blocks: revealBlocks } },
     });
     assert.equal(settle.props.children.length, 1, "settle must start with zero bubbles + dots");
-    assert.equal(settle.props.children[0].props["data-spike"], "typing");
+    assert.equal(settle.props.children[0].props["data-chatty"], "typing");
 
     // Same reply seen only after the fact (history) shows everything at once.
     const history = entry.component({
@@ -484,7 +498,7 @@ async function testClient(mode) {
 
     // The reveal decision itself. DSH renders one empty-body frame right after
     // settle; "wait" there is what stops the whole reply from dumping at once.
-    const plan = globalThis.window.__humanizeSpike.planReveal;
+    const plan = globalThis.window.__chatty.planReveal;
     assert.equal(plan({ done: false, shown: 0 }, 0, false), "wait", "empty body must not finish");
     assert.equal(plan({ done: false, shown: 0 }, 3, false), "schedule");
     assert.equal(plan({ done: false, shown: 3 }, 3, false), "finish");
@@ -514,58 +528,37 @@ async function testClient(mode) {
   }
 
   // Runtime mode switching must mount/unmount without a page reload.
-  const spike = globalThis.window.__humanizeSpike;
+  const chatty = globalThis.window.__chatty;
   const nodeCount = () =>
     slots.entries.filter((e) => e.options.name === "conversation.chat.node").length;
-  assert.equal(spike.mode, mode);
-  spike.setMode("off");
+  assert.equal(chatty.mode, mode);
+  chatty.setMode("off");
   assert.equal(nodeCount(), 0, "setMode(off) must unregister");
-  assert.equal(spike.mode, "off");
+  assert.equal(chatty.mode, "off");
   // The settings page is independent of the chat mode and must survive it.
   assert.equal(
     slots.entries.filter((e) => e.options.name === "settings.section").length,
     1,
     "settings page must survive setMode",
   );
-  spike.setMode(mode);
+  chatty.setMode(mode);
   assert.equal(nodeCount(), 1, "setMode(" + mode + ") must re-register");
-  assert.ok(spike.priority < 0, "shadowing priority must be negative");
+  assert.ok(chatty.priority < 0, "shadowing priority must be negative");
 
   console.log(`  client/${mode}: ok (chat nodes=${nodeCount()})`);
 }
 
 async function testHost() {
-  const configPath = join(ROOT, "spike-humanize/spike.config.json");
-  const original = readFileSync(configPath, "utf8");
-  const liveConfig = JSON.parse(original);
-
-  // Smoke captures go to the same file the G2 sampler reads. Remember where it
-  // ended so the run leaves no fake samples behind.
-  const capturePath = join(ROOT, "spike-humanize/.spike-output/assistant.jsonl");
-  let captureSize = 0;
-  try {
-    captureSize = statSync(capturePath).size;
-  } catch {
-    captureSize = 0;
-  }
-
-  // The section callback now appends one decision per composed step; those
-  // lines are test noise and must not accumulate in the real file.
-  const decisionPath = join(ROOT, "spike-humanize/.spike-output/section-decisions.jsonl");
-  let decisionSize = 0;
-  try {
-    decisionSize = statSync(decisionPath).size;
-  } catch {
-    decisionSize = 0;
-  }
-
-  const clientBootPath = join(ROOT, "spike-humanize/.spike-output/client-boot.jsonl");
-  let clientBootSize = 0;
-  try {
-    clientBootSize = statSync(clientBootPath).size;
-  } catch {
-    clientBootSize = 0;
-  }
+  // Host state (config + logs) lives in the user's home. The test must never
+  // touch the real one, so it points the module at a throwaway directory via
+  // CHATTY_STATE_DIR and starts from an empty config.
+  const configPath = join(STATE_DIR, "config.json");
+  mkdirSync(STATE_DIR, { recursive: true });
+  // Capture is off by default in the product; the contract test still needs it.
+  const liveConfig = { captureAssistant: true };
+  const capturePath = join(LOG_DIR, "assistant.jsonl");
+  const decisionPath = join(LOG_DIR, "section-decisions.jsonl");
+  const clientBootPath = join(LOG_DIR, "client-boot.jsonl");
 
   try {
     // --- scope.mode = off must be inert (fail-closed) -----------------------
@@ -598,7 +591,7 @@ async function testHost() {
     apply(fakeHostCtx(sections, listeners, routes));
 
     assert.equal(sections.length, 1, "expected one prompt section");
-    assert.equal(sections[0].name, "spike-humanize/segmentation");
+    assert.equal(sections[0].name, "dsh-chatty/segmentation");
     assert.equal(sections[0].interpolate, false);
 
     const allowedText = sections[0].text({ agent: { session: { header: { id: sessionId } } } });
@@ -623,8 +616,14 @@ async function testHost() {
         data: { turn: 1, step: 1, message: { content: [{ type: "text", text: "不该被捕获" }] } },
       },
     );
-    const file = join(ROOT, "spike-humanize/.spike-output/assistant.jsonl");
-    const before = readFileSync(file, "utf8");
+    const file = capturePath;
+    // Nothing has been captured yet, so the file may not exist at all.
+    let before = "";
+    try {
+      before = readFileSync(file, "utf8");
+    } catch {
+      before = "";
+    }
     assert.ok(!before.includes("不该被捕获"), "capture must be scope-gated");
 
     listeners[0].handler(
@@ -674,7 +673,7 @@ async function testHost() {
     // The settings page saves colours through the same route. The host must
     // accept the block and drop anything that is not a #rrggbb (a stray value
     // would end up verbatim in a CSS custom property).
-    const saveRoute = routes.find((route) => route.path === "/dsh-humanize/save");
+    const saveRoute = routes.find((route) => route.path === "/dsh-chatty/save");
     assert.ok(saveRoute, "the save route must be registered");
     const replies = [];
     const body = JSON.stringify({
@@ -701,7 +700,7 @@ async function testHost() {
 
     // G5: the browser half reports that it materialised, so a broken package
     // can be told apart from a quiet one without reading the console.
-    const pingRoute = routes.find((route) => route.path === "/dsh-humanize/ping");
+    const pingRoute = routes.find((route) => route.path === "/dsh-chatty/ping");
     assert.ok(pingRoute, "the ping route must be registered");
     const pong = [];
     await pingRoute.handler(
@@ -718,35 +717,22 @@ async function testHost() {
       },
     );
     assert.equal(pong.at(-1).ok, true);
-    const bootLines = readFileSync(join(ROOT, "spike-humanize/.spike-output/client-boot.jsonl"), "utf8")
+    const bootLines = readFileSync(clientBootPath, "utf8")
       .trim()
       .split("\n")
       .map((line) => JSON.parse(line));
     assert.equal(bootLines.at(-1).event, "client-boot", "the browser half must leave a boot record");
     assert.equal(bootLines.at(-1).priority, -100);
 
-    console.log("  host: ok (scope gating + section + capture + hot sectionText)");  } finally {
-    writeFileSync(configPath, original, "utf8");
-    try {
-      truncateSync(capturePath, captureSize);
-    } catch {
-      // capture file may not exist yet; nothing to roll back
-    }
-    try {
-      truncateSync(decisionPath, decisionSize);
-    } catch {
-      // the decision log appears on the first composed step
-    }
-    try {
-      truncateSync(clientBootPath, clientBootSize);
-    } catch {
-      // the boot record appears on the first successful ping
-    }
+    console.log("  host: ok (scope gating + section + capture + hot sectionText)");
+  } finally {
+    // Everything this test wrote lives in the throwaway STATE_DIR.
+    rmSync(STATE_DIR, { recursive: true, force: true });
   }
 }
 
 function loadHost(suffix) {
-  return import(pathToFileURL(join(ROOT, "spike-humanize/lib/host.js")).href + suffix);
+  return import(pathToFileURL(join(ROOT, "dsh-chatty/lib/host.js")).href + suffix);
 }
 
 function fakeHostCtx(sections, listeners, routes = []) {
@@ -782,7 +768,7 @@ function fakeHostCtx(sections, listeners, routes = []) {
  * typing `scopedWatch(...)` in the console.
  */
 async function testRemoteConfig() {
-  STORE.set("humanize.spike.mode", "off");
+  STORE.set("chatty.mode", "off");
   delete globalThis.__loaded;
 
   const calls = [];
@@ -798,7 +784,7 @@ async function testRemoteConfig() {
     });
   };
 
-  await import(pathToFileURL(join(ROOT, "spike-humanize/lib/client.js")).href + "?remote=1");
+  await import(pathToFileURL(join(ROOT, "dsh-chatty/lib/client.js")).href + "?remote=1");
 
   const module = globalThis.__loaded.factory(fakeRequire);
   const slots = makeSlots();
@@ -812,9 +798,9 @@ async function testRemoteConfig() {
   module.apply(ctx);
   await new Promise((resolve) => setTimeout(resolve, 20));
 
-  const api = globalThis.window.__humanizeSpike;
+  const api = globalThis.window.__chatty;
   const diag = api.diag();
-  assert.equal(calls[0].url, "/dsh-humanize/state", "boot must read the host config");
+  assert.equal(calls[0].url, "/dsh-chatty/state", "boot must read the host config");
   assert.equal(api.mode, "off", "the root registration must stay off");
   assert.equal(diag.bubbleGap, 900, "reveal.gap must come from the host config");
   assert.equal(diag.perCharMs, 8, "reveal.perChar must come from the host config");
