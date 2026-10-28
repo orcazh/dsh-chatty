@@ -483,6 +483,35 @@
       var SLIDER_GAP_MAX = 3000;
       var SLIDER_PERCHAR_MAX = 60;
 
+      /** Proves the browser half loaded; the host appends it to a file. */
+      function pingHost(info) {
+        if (typeof fetch !== "function") return;
+        // Same reason as `startRemoteConfig`: the client half can materialise
+        // before the host routes are registered, and a 404 here would look
+        // exactly like "the package is broken".
+        var tries = 0;
+        function retry() {
+          if (tries < 6) setTimeout(attempt, 700 * tries);
+        }
+        function attempt() {
+          tries += 1;
+          try {
+            fetch(REMOTE_BASE + "/ping", {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify(info || {}),
+            })
+              .then(function (response) {
+                if (!response || !response.ok) retry();
+              })
+              .catch(retry);
+          } catch {
+            // no fetch: nothing to report with
+          }
+        }
+        attempt();
+      }
+
       /** Applies the host's `reveal` block to the live tunables. */
       function applyRevealSettings(reveal) {
         if (!reveal || typeof reveal !== "object") return;
@@ -1407,6 +1436,12 @@
         // G3: read the host config and turn the plugin on by itself. Without
         // this the user still has to type `scopedWatch(...)` in the console.
         startRemoteConfig();
+
+        // G5: leave a line on disk proving this half materialised. When the
+        // package is deliberately broken (no `exports["./client"]`, wrong
+        // `platform`), the console error may be swallowed or belong to the
+        // host; a file the host writes is unambiguous and readable later.
+        pingHost({ mode: mode, priority: priority });
 
         // G6: dump the sessions service once the app has settled, so it can be
         // read straight off the console without typing anything.

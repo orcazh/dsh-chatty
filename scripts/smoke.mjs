@@ -559,6 +559,14 @@ async function testHost() {
     decisionSize = 0;
   }
 
+  const clientBootPath = join(ROOT, "spike-humanize/.spike-output/client-boot.jsonl");
+  let clientBootSize = 0;
+  try {
+    clientBootSize = statSync(clientBootPath).size;
+  } catch {
+    clientBootSize = 0;
+  }
+
   try {
     // --- scope.mode = off must be inert (fail-closed) -----------------------
     writeFileSync(
@@ -691,6 +699,32 @@ async function testHost() {
     assert.equal(savedTheme.userText, "", "anything that is not #rrggbb must fall back to default");
     assert.equal(savedTheme.assistantText, "#123456", "the assistant palette must round-trip");
 
+    // G5: the browser half reports that it materialised, so a broken package
+    // can be told apart from a quiet one without reading the console.
+    const pingRoute = routes.find((route) => route.path === "/dsh-humanize/ping");
+    assert.ok(pingRoute, "the ping route must be registered");
+    const pong = [];
+    await pingRoute.handler(
+      {
+        async *[Symbol.asyncIterator]() {
+          yield JSON.stringify({ mode: "bubbles", priority: -100 });
+        },
+      },
+      {
+        writeHead() {},
+        end(payload) {
+          pong.push(JSON.parse(payload));
+        },
+      },
+    );
+    assert.equal(pong.at(-1).ok, true);
+    const bootLines = readFileSync(join(ROOT, "spike-humanize/.spike-output/client-boot.jsonl"), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    assert.equal(bootLines.at(-1).event, "client-boot", "the browser half must leave a boot record");
+    assert.equal(bootLines.at(-1).priority, -100);
+
     console.log("  host: ok (scope gating + section + capture + hot sectionText)");  } finally {
     writeFileSync(configPath, original, "utf8");
     try {
@@ -702,6 +736,11 @@ async function testHost() {
       truncateSync(decisionPath, decisionSize);
     } catch {
       // the decision log appears on the first composed step
+    }
+    try {
+      truncateSync(clientBootPath, clientBootSize);
+    } catch {
+      // the boot record appears on the first successful ping
     }
   }
 }

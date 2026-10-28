@@ -23,6 +23,7 @@ const OUTPUT_FILE = join(OUTPUT_DIR, "assistant.jsonl");
 const BOOT_FILE = join(OUTPUT_DIR, "host-boot.jsonl");
 const SEEN_FILE = join(OUTPUT_DIR, "sessions.jsonl");
 const SECTION_FILE = join(OUTPUT_DIR, "section-decisions.jsonl");
+const CLIENT_FILE = join(OUTPUT_DIR, "client-boot.jsonl");
 
 const DEFAULT_CONFIG = {
   promptSection: true,
@@ -436,6 +437,24 @@ function installConfigRoutes(ctx, config, log, warn) {
   };
 
   route("/dsh-humanize/state", async (req, res) => reply(res, snapshot()));
+
+  // G5 liveness: one line per browser half that actually materialised. Read
+  // `.spike-output/client-boot.jsonl` after a restart to tell "the client half
+  // did not load" apart from "it loaded but did nothing".
+  route("/dsh-humanize/ping", async (req, res) => {
+    const body = await readBody(req);
+    appendRecord(
+      {
+        ts: new Date().toISOString(),
+        event: "client-boot",
+        pid: process.pid,
+        mode: body && body.mode,
+        priority: body && body.priority,
+      },
+      CLIENT_FILE,
+    );
+    reply(res, { ok: true });
+  });
 
   route("/dsh-humanize/save", async (req, res) => {
     const patch = await readBody(req);
